@@ -71,7 +71,7 @@ fn alloc_cmd(size: u32) {
         // by setting the initial value of the bump allocator.
         let ptcl_dyn_start = config.width_in_tiles * config.height_in_tiles * PTCL_INITIAL_ALLOC;
         var new_cmd = ptcl_dyn_start + atomicAdd(&bump.ptcl, PTCL_INCREMENT);
-        if new_cmd + PTCL_INCREMENT > config.ptcl_size {
+        if new_cmd > config.ptcl_size || PTCL_INCREMENT > config.ptcl_size - new_cmd {
             // This sets us up for technical UB, as lots of threads will be writing
             // to the same locations. But I think it's fine, and predicating the
             // writes would probably slow things down.
@@ -92,7 +92,15 @@ fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) {
     let n_segs = tile.segment_count_or_ix;
     if n_segs != 0u {
         var seg_ix = atomicAdd(&bump.segments, n_segs);
-        tiles[tile_ix].segment_count_or_ix = ~seg_ix;
+        let segments_overflow =
+            n_segs > config.segments_size || seg_ix > config.segments_size - n_segs;
+        if segments_overflow {
+            seg_ix = 0u;
+            tiles[tile_ix].segment_count_or_ix = 0u;
+            atomicOr(&bump.failed, STAGE_COARSE);
+        } else {
+            tiles[tile_ix].segment_count_or_ix = ~seg_ix;
+        }
         alloc_cmd(4u);
         ptcl[cmd_offset] = CMD_FILL;
         let even_odd = (draw_flags & DRAW_INFO_FLAGS_FILL_RULE_BIT) != 0u;

@@ -144,11 +144,14 @@ use peniko::ImageData;
 pub use wgpu;
 
 pub use scene::{DrawGlyphs, Scene};
-pub use vello_encoding::{Glyph, NormalizedCoord};
+pub use vello_encoding::{
+    BufferSizingMode, BumpAllocators, DynamicBufferPolicy, Glyph, NormalizedCoord,
+    RenderWorkloadProfile, SceneComplexityProfile, TargetProfile, TileCoverageProfile,
+};
 
 use low_level::ShaderId;
 #[cfg(feature = "wgpu")]
-use low_level::{BumpAllocators, FullShaders, Recording, Render};
+use low_level::{BufferProxy, FullShaders, Recording, Render};
 use thiserror::Error;
 
 #[cfg(feature = "wgpu")]
@@ -294,6 +297,17 @@ pub enum Error {
     #[error("wgpu Error from scope")]
     WgpuErrorFromScope(#[from] wgpu::Error),
 
+    #[cfg(feature = "wgpu")]
+    #[error(
+        "Dynamic GPU buffer allocation failed after {attempts} attempts; failed mask {failed:#x}; required {required:?}; allocated {allocated:?}"
+    )]
+    DynamicBufferAllocationFailed {
+        attempts: u32,
+        failed: u32,
+        required: BumpAllocators,
+        allocated: BumpAllocators,
+    },
+
     /// Failed to create [`GpuProfiler`].
     /// See [`wgpu_profiler::CreationError`] for more information.
     #[cfg(feature = "wgpu-profiler")]
@@ -332,6 +346,7 @@ pub struct Renderer {
     engine: WgpuEngine,
     resolver: Resolver,
     shaders: FullShaders,
+    last_dynamic_buffer_stats: Option<DynamicBufferStats>,
     #[cfg(feature = "debug_layers")]
     debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
@@ -366,6 +381,14 @@ pub struct RenderParams {
     /// The anti-aliasing algorithm. The selected algorithm must have been initialized while
     /// constructing the `Renderer`.
     pub antialiasing_method: AaConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynamicBufferStats {
+    pub attempts: u32,
+    pub failed: u32,
+    pub required: BumpAllocators,
+    pub allocated: BumpAllocators,
 }
 
 #[cfg(feature = "wgpu")]
@@ -426,6 +449,120 @@ struct RenderResult {
     captured: Option<render::CapturedBuffers>,
 }
 
+fn bump_exceeds_allocation(required: BumpAllocators, allocated: BumpAllocators) -> bool {
+    required.binning > allocated.binning
+        || required.ptcl > allocated.ptcl
+        || required.tile > allocated.tile
+        || required.seg_counts > allocated.seg_counts
+        || required.segments > allocated.segments
+        || required.blend > allocated.blend
+        || required.lines > allocated.lines
+}
+
+const STAGE_BINNING: u32 = 0x1;
+const STAGE_TILE_ALLOC: u32 = 0x2;
+const STAGE_FLATTEN: u32 = 0x4;
+const STAGE_PATH_COUNT: u32 = 0x8;
+const STAGE_COARSE: u32 = 0x10;
+
+fn max_buffer_elements<T>(max_dynamic_buffer_bytes: u32) -> u32 {
+    (max_dynamic_buffer_bytes / size_of::<T>() as u32).max(1)
+}
+
+fn retry_counter_requirement(value: u32, allocated: u32, max_elements: u32) -> u32 {
+    if value <= max_elements {
+        value
+    } else {
+        allocated.saturating_mul(2).max(1).min(max_elements)
+    }
+}
+
+fn clamp_retry_bump_requirements(
+    mut required: BumpAllocators,
+    allocated: BumpAllocators,
+    max_dynamic_buffer_bytes: u32,
+) -> BumpAllocators {
+    required.binning = retry_counter_requirement(
+        required.binning,
+        allocated.binning,
+        max_buffer_elements::<u32>(max_dynamic_buffer_bytes),
+    );
+    required.ptcl = retry_counter_requirement(
+        required.ptcl,
+        allocated.ptcl,
+        max_buffer_elements::<u32>(max_dynamic_buffer_bytes),
+    );
+    required.tile = retry_counter_requirement(
+        required.tile,
+        allocated.tile,
+        max_buffer_elements::<vello_encoding::Tile>(max_dynamic_buffer_bytes),
+    );
+    required.seg_counts = retry_counter_requirement(
+        required.seg_counts,
+        allocated.seg_counts,
+        max_buffer_elements::<vello_encoding::SegmentCount>(max_dynamic_buffer_bytes),
+    );
+    required.segments = retry_counter_requirement(
+        required.segments,
+        allocated.segments,
+        max_buffer_elements::<vello_encoding::PathSegment>(max_dynamic_buffer_bytes),
+    );
+    required.blend = retry_counter_requirement(
+        required.blend,
+        allocated.blend,
+        max_buffer_elements::<u32>(max_dynamic_buffer_bytes),
+    );
+    required.lines = retry_counter_requirement(
+        required.lines,
+        allocated.lines,
+        max_buffer_elements::<vello_encoding::LineSoup>(max_dynamic_buffer_bytes),
+    );
+    required
+}
+
+fn retry_bump_requirements(
+    bump: BumpAllocators,
+    allocated: BumpAllocators,
+    max_dynamic_buffer_bytes: u32,
+) -> BumpAllocators {
+    let mut required = bump;
+    let failed = bump.failed;
+    if failed & STAGE_FLATTEN != 0 {
+        required.binning = 0;
+        required.tile = 0;
+        required.seg_counts = 0;
+        required.segments = 0;
+        required.blend = 0;
+        required.ptcl = 0;
+        return clamp_retry_bump_requirements(required, allocated, max_dynamic_buffer_bytes);
+    }
+    if failed & STAGE_BINNING != 0 {
+        required.tile = 0;
+        required.seg_counts = 0;
+        required.segments = 0;
+        required.blend = 0;
+        required.ptcl = 0;
+        return clamp_retry_bump_requirements(required, allocated, max_dynamic_buffer_bytes);
+    }
+    if failed & STAGE_TILE_ALLOC != 0 {
+        required.seg_counts = 0;
+        required.segments = 0;
+        required.blend = 0;
+        required.ptcl = 0;
+        return clamp_retry_bump_requirements(required, allocated, max_dynamic_buffer_bytes);
+    }
+    if failed & STAGE_PATH_COUNT != 0 {
+        required.segments = 0;
+        required.blend = 0;
+        required.ptcl = 0;
+        return clamp_retry_bump_requirements(required, allocated, max_dynamic_buffer_bytes);
+    }
+    if failed & STAGE_COARSE != 0 {
+        return clamp_retry_bump_requirements(required, allocated, max_dynamic_buffer_bytes);
+    }
+    clamp_retry_bump_requirements(required, allocated, max_dynamic_buffer_bytes)
+}
+
 #[cfg(feature = "wgpu")]
 impl Renderer {
     /// Creates a new renderer for the specified device.
@@ -447,6 +584,7 @@ impl Renderer {
             engine,
             resolver: Resolver::new(),
             shaders,
+            last_dynamic_buffer_stats: None,
             #[cfg(feature = "debug_layers")]
             debug,
             #[cfg(feature = "wgpu-profiler")]
@@ -506,6 +644,182 @@ impl Renderer {
         }
 
         Ok(())
+    }
+
+    pub fn render_to_texture_with_workload_profile(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        profile: Option<&RenderWorkloadProfile>,
+    ) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = profile;
+            return self.render_to_texture(device, queue, scene, texture, params);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.render_to_texture_validated(device, queue, scene, texture, params, profile)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_to_texture_validated(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        profile: Option<&RenderWorkloadProfile>,
+    ) -> Result<()> {
+        const MAX_DYNAMIC_BUFFER_ATTEMPTS: u32 = 6;
+
+        let allow_retry = profile
+            .map(|profile| profile.policy.allow_grow_retry)
+            .unwrap_or(true);
+        let max_dynamic_buffer_bytes = device.limits().max_storage_buffer_binding_size;
+        let mut required = BumpAllocators::default();
+        let mut last_stats = DynamicBufferStats::default();
+
+        for attempt in 1..=MAX_DYNAMIC_BUFFER_ATTEMPTS {
+            let mut render = Render::new();
+            let encoding = scene.encoding();
+            let recording = render.render_encoding_coarse_with_profile(
+                encoding,
+                &mut self.resolver,
+                &self.shaders,
+                params,
+                profile,
+                Some(required),
+                true,
+            );
+            let target = render.out_image();
+            let bump_proxy = render.bump_buf();
+            let allocated = render.allocated_bump().unwrap_or_default();
+
+            self.engine.run_recording(
+                device,
+                queue,
+                &recording,
+                &[],
+                "render_to_texture coarse",
+                #[cfg(feature = "wgpu-profiler")]
+                &mut self.profiler,
+            )?;
+
+            let bump = self
+                .read_bump_allocators(device, bump_proxy)?
+                .unwrap_or_default();
+            let failed = bump.failed != 0 || bump_exceeds_allocation(bump, allocated);
+            last_stats = DynamicBufferStats {
+                attempts: attempt,
+                failed: bump.failed,
+                required: bump,
+                allocated,
+            };
+
+            if failed {
+                let mut cleanup = Recording::default();
+                render.record_free_fine_resources(&mut cleanup);
+                self.engine.run_recording(
+                    device,
+                    queue,
+                    &cleanup,
+                    &[],
+                    "render_to_texture cleanup failed coarse",
+                    #[cfg(feature = "wgpu-profiler")]
+                    &mut self.profiler,
+                )?;
+
+                if allow_retry && attempt < MAX_DYNAMIC_BUFFER_ATTEMPTS {
+                    required = required.max_with(retry_bump_requirements(
+                        bump,
+                        allocated,
+                        max_dynamic_buffer_bytes,
+                    ));
+                    continue;
+                }
+                self.last_dynamic_buffer_stats = Some(last_stats);
+                return Err(Error::DynamicBufferAllocationFailed {
+                    attempts: attempt,
+                    failed: bump.failed,
+                    required: bump,
+                    allocated,
+                });
+            }
+
+            let mut recording = Recording::default();
+            render.record_fine(&self.shaders, &mut recording);
+            let external_resources = [ExternalResource::Image(target, texture)];
+            self.engine.run_recording(
+                device,
+                queue,
+                &recording,
+                &external_resources,
+                "render_to_texture fine",
+                #[cfg(feature = "wgpu-profiler")]
+                &mut self.profiler,
+            )?;
+            self.last_dynamic_buffer_stats = Some(last_stats);
+
+            #[cfg(feature = "wgpu-profiler")]
+            {
+                self.profiler.end_frame().unwrap();
+                if let Some(result) = self
+                    .profiler
+                    .process_finished_frame(queue.get_timestamp_period())
+                {
+                    self.profile_result = Some(result);
+                }
+            }
+
+            return Ok(());
+        }
+
+        self.last_dynamic_buffer_stats = Some(last_stats);
+        Err(Error::DynamicBufferAllocationFailed {
+            attempts: MAX_DYNAMIC_BUFFER_ATTEMPTS,
+            failed: last_stats.failed,
+            required: last_stats.required,
+            allocated: last_stats.allocated,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_bump_allocators(
+        &mut self,
+        device: &Device,
+        proxy: BufferProxy,
+    ) -> Result<Option<BumpAllocators>> {
+        let bump = if let Some(buffer) = self.engine.get_download(proxy) {
+            let slice = buffer.slice(..);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+            let _ = device.poll(wgpu::PollType::Wait);
+            receiver
+                .recv()
+                .expect("bump allocator map callback dropped")?;
+            let mapped = slice.get_mapped_range();
+            let bump = bytemuck::pod_read_unaligned(&mapped);
+            drop(mapped);
+            buffer.unmap();
+            Some(bump)
+        } else {
+            None
+        };
+        self.engine.free_download(proxy);
+        Ok(bump)
+    }
+
+    pub fn last_dynamic_buffer_stats(&self) -> Option<DynamicBufferStats> {
+        self.last_dynamic_buffer_stats
     }
 
     /// Overwrite `image` with `texture`.

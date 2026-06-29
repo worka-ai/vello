@@ -11,6 +11,8 @@ use bytemuck::{Pod, Zeroable};
 
 const TILE_WIDTH: u32 = 16;
 const TILE_HEIGHT: u32 = 16;
+// Keep in sync with `vello_shaders/shader/shared/ptcl.wgsl`.
+const PTCL_INITIAL_ALLOC: u32 = 64;
 
 // TODO: Obtain these from the vello_shaders crate
 pub(crate) const PATH_REDUCE_WG: u32 = 256;
@@ -44,6 +46,7 @@ pub struct BumpAllocatorMemory {
     pub tile: BufferSize<Tile>,
     pub seg_counts: BufferSize<SegmentCount>,
     pub segments: BufferSize<PathSegment>,
+    pub blend: BufferSize<u32>,
     pub lines: BufferSize<LineSoup>,
 }
 
@@ -54,6 +57,7 @@ impl BumpAllocators {
         let tile = BufferSize::new(self.tile);
         let seg_counts = BufferSize::new(self.seg_counts);
         let segments = BufferSize::new(self.segments);
+        let blend = BufferSize::new(self.blend);
         let lines = BufferSize::new(self.lines);
         BumpAllocatorMemory {
             total: binning.size_in_bytes()
@@ -61,14 +65,52 @@ impl BumpAllocators {
                 + tile.size_in_bytes()
                 + seg_counts.size_in_bytes()
                 + segments.size_in_bytes()
+                + blend.size_in_bytes()
                 + lines.size_in_bytes(),
             binning,
             ptcl,
             tile,
             seg_counts,
             segments,
+            blend,
             lines,
         }
+    }
+
+    pub fn max_with(self, other: Self) -> Self {
+        Self {
+            failed: self.failed | other.failed,
+            binning: self.binning.max(other.binning),
+            ptcl: self.ptcl.max(other.ptcl),
+            tile: self.tile.max(other.tile),
+            seg_counts: self.seg_counts.max(other.seg_counts),
+            segments: self.segments.max(other.segments),
+            blend: self.blend.max(other.blend),
+            lines: self.lines.max(other.lines),
+        }
+    }
+
+    pub fn with_margin(self, margin_percent: u32) -> Self {
+        Self {
+            failed: self.failed,
+            binning: grow_by_percent(self.binning, margin_percent),
+            ptcl: grow_by_percent(self.ptcl, margin_percent),
+            tile: grow_by_percent(self.tile, margin_percent),
+            seg_counts: grow_by_percent(self.seg_counts, margin_percent),
+            segments: grow_by_percent(self.segments, margin_percent),
+            blend: grow_by_percent(self.blend, margin_percent),
+            lines: grow_by_percent(self.lines, margin_percent),
+        }
+    }
+
+    pub fn exceeds(self, sizes: &BufferSizes, layout: &Layout) -> bool {
+        self.binning > sizes.bin_data.len().saturating_sub(layout.bin_data_start)
+            || self.ptcl > sizes.ptcl.len()
+            || self.tile > sizes.tiles.len()
+            || self.seg_counts > sizes.seg_counts.len()
+            || self.segments > sizes.segments.len()
+            || self.blend > sizes.blend_spill.len()
+            || self.lines > sizes.lines.len()
     }
 }
 
@@ -83,6 +125,7 @@ impl std::fmt::Display for BumpAllocatorMemory {
                  \tTile:\t\t\t{} elements ({} bytes)\n\
                  \tSegment Counts:\t\t{} elements ({} bytes)\n\
                  \tSegments:\t\t{} elements ({} bytes)\n\
+                 \tBlend:\t\t\t{} elements ({} bytes)\n\
                  \tLines:\t\t\t{} elements ({} bytes)",
             self.total,
             self.total as f32 / (1 << 10) as f32,
@@ -97,10 +140,87 @@ impl std::fmt::Display for BumpAllocatorMemory {
             self.seg_counts.size_in_bytes(),
             self.segments.len(),
             self.segments.size_in_bytes(),
+            self.blend.len(),
+            self.blend.size_in_bytes(),
             self.lines.len(),
             self.lines.size_in_bytes()
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferSizingMode {
+    VelloEstimate,
+    CallerEstimate,
+    ExactUpperBound,
+}
+
+impl Default for BufferSizingMode {
+    fn default() -> Self {
+        Self::CallerEstimate
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DynamicBufferPolicy {
+    pub sizing: BufferSizingMode,
+    pub safety_margin_percent: u32,
+    pub allow_grow_retry: bool,
+    pub max_dynamic_bytes: Option<u64>,
+}
+
+impl Default for DynamicBufferPolicy {
+    fn default() -> Self {
+        Self {
+            sizing: BufferSizingMode::CallerEstimate,
+            safety_margin_percent: 25,
+            allow_grow_retry: true,
+            max_dynamic_bytes: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TargetProfile {
+    pub width_px: u32,
+    pub height_px: u32,
+    pub scale_factor: f32,
+    pub dirty_tiles: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TileCoverageProfile {
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub target_tiles: u32,
+    pub visible_tiles: u32,
+    pub total_draw_tile_coverage: u32,
+    pub total_path_tile_coverage: u32,
+    pub max_ops_per_tile: u32,
+    pub max_blend_depth: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SceneComplexityProfile {
+    pub draw_ops: u32,
+    pub clip_ops: u32,
+    pub max_clip_depth: u32,
+    pub path_ops: u32,
+    pub path_points: u32,
+    pub estimated_path_segments: u32,
+    pub glyph_runs: u32,
+    pub glyphs: u32,
+    pub images: u32,
+    pub image_bytes: u64,
+    pub blend_ops: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderWorkloadProfile {
+    pub target: TargetProfile,
+    pub coverage: TileCoverageProfile,
+    pub scene: SceneComplexityProfile,
+    pub policy: DynamicBufferPolicy,
 }
 
 /// Storage of indirect dispatch size values.
@@ -166,6 +286,17 @@ pub struct RenderConfig {
 
 impl RenderConfig {
     pub fn new(layout: &Layout, width: u32, height: u32, base_color: &peniko::Color) -> Self {
+        Self::new_with_profile(layout, width, height, base_color, None, None)
+    }
+
+    pub fn new_with_profile(
+        layout: &Layout,
+        width: u32,
+        height: u32,
+        base_color: &peniko::Color,
+        profile: Option<&RenderWorkloadProfile>,
+        minimum_bump: Option<BumpAllocators>,
+    ) -> Self {
         let new_width = width.next_multiple_of(TILE_WIDTH);
         let new_height = height.next_multiple_of(TILE_HEIGHT);
         let width_in_tiles = new_width / TILE_WIDTH;
@@ -173,7 +304,8 @@ impl RenderConfig {
         let n_path_tags = layout.path_tags_size();
         let workgroup_counts =
             WorkgroupCounts::new(layout, width_in_tiles, height_in_tiles, n_path_tags);
-        let buffer_sizes = BufferSizes::new(layout, &workgroup_counts);
+        let buffer_sizes =
+            BufferSizes::new_with_profile(layout, &workgroup_counts, profile, minimum_bump);
         Self {
             gpu: ConfigUniform {
                 width_in_tiles,
@@ -361,6 +493,15 @@ pub struct BufferSizes {
 
 impl BufferSizes {
     pub fn new(layout: &Layout, workgroups: &WorkgroupCounts) -> Self {
+        Self::new_with_profile(layout, workgroups, None, None)
+    }
+
+    pub fn new_with_profile(
+        layout: &Layout,
+        workgroups: &WorkgroupCounts,
+        profile: Option<&RenderWorkloadProfile>,
+        minimum_bump: Option<BumpAllocators>,
+    ) -> Self {
         let n_paths = layout.n_paths;
         let n_draw_objects = layout.n_draw_objects;
         let n_clips = layout.n_clips;
@@ -391,58 +532,118 @@ impl BufferSizes {
         let n_paths_aligned = align_up(n_paths, 256);
         let paths = BufferSize::new(n_paths_aligned);
 
+        let has_profile = profile.is_some();
+        let profile = profile.copied().unwrap_or_default();
+        let policy = if has_profile {
+            profile.policy
+        } else {
+            DynamicBufferPolicy {
+                sizing: BufferSizingMode::VelloEstimate,
+                ..DynamicBufferPolicy::default()
+            }
+        };
+        let minimum_bump = minimum_bump
+            .unwrap_or_default()
+            .with_margin(policy.safety_margin_percent);
+
         let tile_count = workgroups.fine.0.saturating_mul(workgroups.fine.1).max(1);
         let bin_count = workgroups
             .coarse
             .0
             .saturating_mul(workgroups.coarse.1)
             .max(1);
-        let path_data_words = layout.draw_tag_base.saturating_sub(layout.path_data_base);
-        let path_tag_words = layout.path_data_base.saturating_sub(layout.path_tag_base);
-        let path_complexity = path_data_words
-            .saturating_add(path_tag_words)
+        let profiled_target_tiles = profile.coverage.target_tiles.max(tile_count);
+        let visible_tiles = profile
+            .coverage
+            .visible_tiles
+            .max(profiled_target_tiles)
+            .max(1);
+        let draw_tile_coverage = profile
+            .coverage
+            .total_draw_tile_coverage
+            .max(n_draw_objects)
+            .max(visible_tiles);
+        let path_tile_coverage = profile
+            .coverage
+            .total_path_tile_coverage
+            .max(n_paths)
+            .max(1);
+        let blend_depth = profile
+            .coverage
+            .max_blend_depth
+            .max(profile.scene.max_clip_depth);
+        let blend_ops = profile.scene.blend_ops.max(blend_depth);
+        let glyph_pressure = profile
+            .scene
+            .glyphs
+            .saturating_mul(24)
+            .saturating_add(profile.scene.glyph_runs.saturating_mul(64));
+        let path_pressure = profile
+            .scene
+            .estimated_path_segments
+            .max(profile.scene.path_points.saturating_mul(2))
+            .max(glyph_pressure);
+        let caller_path_complexity = path_pressure
             .max(n_paths.saturating_mul(8))
             .max(n_draw_objects.saturating_mul(8))
             .max(1);
+        let layout_path_data_words = layout.draw_tag_base.saturating_sub(layout.path_data_base);
+        let layout_path_tag_words = layout.path_data_base.saturating_sub(layout.path_tag_base);
+        let layout_path_complexity = layout_path_data_words
+            .saturating_add(layout_path_tag_words)
+            .max(caller_path_complexity);
+        let path_complexity = match policy.sizing {
+            BufferSizingMode::CallerEstimate | BufferSizingMode::ExactUpperBound if has_profile => {
+                caller_path_complexity
+            }
+            BufferSizingMode::CallerEstimate
+            | BufferSizingMode::ExactUpperBound
+            | BufferSizingMode::VelloEstimate => layout_path_complexity,
+        };
 
-        // Size bump-allocated GPU buffers from the target and scene layout instead of reserving
-        // the old fixed paris-30k working set for every render.
         let bin_data_len = layout.bin_data_start.saturating_add(dynamic_buffer_len(
-            bin_count.saturating_mul(128),
-            path_complexity.saturating_mul(4),
-            1 << 16,
+            bin_count.saturating_mul(64),
+            draw_tile_coverage
+                .saturating_mul(4)
+                .max(path_complexity.saturating_mul(2)),
+            minimum_bump.binning.max(1 << 14),
         ));
         let tiles = BufferSize::new(dynamic_buffer_len(
-            tile_count.saturating_mul(8),
-            n_paths.saturating_mul(16),
-            1 << 17,
+            path_tile_coverage.saturating_mul(4),
+            n_paths.saturating_mul(16).max(visible_tiles),
+            minimum_bump.tile.max(1 << 14),
         ));
         let lines = BufferSize::new(dynamic_buffer_len(
-            path_complexity.saturating_mul(8),
-            tile_count.saturating_mul(4),
-            1 << 17,
+            path_complexity.saturating_mul(4),
+            path_tile_coverage.saturating_mul(2),
+            minimum_bump.lines.max(1 << 14),
         ));
         let seg_counts = BufferSize::new(dynamic_buffer_len(
             tiles.len(),
             path_complexity.saturating_mul(2),
-            1 << 17,
+            minimum_bump.seg_counts.max(1 << 14),
         ));
-        let segments = BufferSize::new(dynamic_buffer_len(
-            lines.len(),
-            path_complexity.saturating_mul(8),
-            1 << 17,
-        ));
-        // 16 * 16 (1 << 8) is one blend spill.
+        let segments = BufferSize::new(
+            dynamic_buffer_len(
+                lines.len(),
+                path_complexity.saturating_mul(4),
+                minimum_bump.segments.max(1 << 14),
+            )
+            .max(lines.len()),
+        );
         let blend_spill = BufferSize::new(dynamic_buffer_len(
-            tile_count.saturating_mul(4),
-            bin_count.saturating_mul(64),
-            1 << 16,
+            visible_tiles.saturating_mul(blend_depth.saturating_sub(4)),
+            blend_ops.saturating_mul(TILE_WIDTH * TILE_HEIGHT),
+            minimum_bump.blend.max(1 << 12),
         ));
-        let ptcl = BufferSize::new(dynamic_buffer_len(
-            tile_count.saturating_mul(64),
-            n_draw_objects.saturating_mul(32),
-            1 << 18,
-        ));
+        let ptcl_static = tile_count.saturating_mul(PTCL_INITIAL_ALLOC);
+        let ptcl_dynamic = dynamic_buffer_len(
+            draw_tile_coverage.saturating_mul(8),
+            visible_tiles
+                .saturating_mul(profile.coverage.max_ops_per_tile.max(1).saturating_mul(4)),
+            minimum_bump.ptcl.max(1 << 15),
+        );
+        let ptcl = BufferSize::new(ptcl_static.saturating_add(ptcl_dynamic));
         let bin_data = BufferSize::new(bin_data_len);
         Self {
             path_reduced,
@@ -477,6 +678,17 @@ fn dynamic_buffer_len(a: u32, b: u32, floor: u32) -> u32 {
     align_up(a.max(b).max(floor), 256)
 }
 
+fn grow_by_percent(value: u32, percent: u32) -> u32 {
+    if value == 0 {
+        return 0;
+    }
+    let grown = (value as u64)
+        .saturating_mul(100_u64.saturating_add(percent as u64))
+        .div_ceil(100);
+    grown.min(u32::MAX as u64) as u32
+}
+
 const fn align_up(len: u32, alignment: u32) -> u32 {
-    len + (len.wrapping_neg() & (alignment - 1))
+    let mask = alignment - 1;
+    len.saturating_add(mask) & !mask
 }
