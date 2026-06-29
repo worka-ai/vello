@@ -391,17 +391,59 @@ impl BufferSizes {
         let n_paths_aligned = align_up(n_paths, 256);
         let paths = BufferSize::new(n_paths_aligned);
 
-        // The following buffer sizes have been hand picked to accommodate the vello test scenes as
-        // well as paris-30k. These should instead get derived from the scene layout using
-        // reasonable heuristics.
-        let bin_data = BufferSize::new(1 << 18);
-        let tiles = BufferSize::new(1 << 21);
-        let lines = BufferSize::new(1 << 21);
-        let seg_counts = BufferSize::new(1 << 21);
-        let segments = BufferSize::new(1 << 21);
-        // 16 * 16 (1 << 8) is one blend spill, so this allows for 4096 spills.
-        let blend_spill = BufferSize::new(1 << 20);
-        let ptcl = BufferSize::new(1 << 23);
+        let tile_count = workgroups.fine.0.saturating_mul(workgroups.fine.1).max(1);
+        let bin_count = workgroups
+            .coarse
+            .0
+            .saturating_mul(workgroups.coarse.1)
+            .max(1);
+        let path_data_words = layout.draw_tag_base.saturating_sub(layout.path_data_base);
+        let path_tag_words = layout.path_data_base.saturating_sub(layout.path_tag_base);
+        let path_complexity = path_data_words
+            .saturating_add(path_tag_words)
+            .max(n_paths.saturating_mul(8))
+            .max(n_draw_objects.saturating_mul(8))
+            .max(1);
+
+        // Size bump-allocated GPU buffers from the target and scene layout instead of reserving
+        // the old fixed paris-30k working set for every render.
+        let bin_data_len = layout.bin_data_start.saturating_add(dynamic_buffer_len(
+            bin_count.saturating_mul(128),
+            path_complexity.saturating_mul(4),
+            1 << 16,
+        ));
+        let tiles = BufferSize::new(dynamic_buffer_len(
+            tile_count.saturating_mul(8),
+            n_paths.saturating_mul(16),
+            1 << 17,
+        ));
+        let lines = BufferSize::new(dynamic_buffer_len(
+            path_complexity.saturating_mul(8),
+            tile_count.saturating_mul(4),
+            1 << 17,
+        ));
+        let seg_counts = BufferSize::new(dynamic_buffer_len(
+            tiles.len(),
+            path_complexity.saturating_mul(2),
+            1 << 17,
+        ));
+        let segments = BufferSize::new(dynamic_buffer_len(
+            lines.len(),
+            path_complexity.saturating_mul(8),
+            1 << 17,
+        ));
+        // 16 * 16 (1 << 8) is one blend spill.
+        let blend_spill = BufferSize::new(dynamic_buffer_len(
+            tile_count.saturating_mul(4),
+            bin_count.saturating_mul(64),
+            1 << 16,
+        ));
+        let ptcl = BufferSize::new(dynamic_buffer_len(
+            tile_count.saturating_mul(64),
+            n_draw_objects.saturating_mul(32),
+            1 << 18,
+        ));
+        let bin_data = BufferSize::new(bin_data_len);
         Self {
             path_reduced,
             path_reduced2,
@@ -429,6 +471,10 @@ impl BufferSizes {
             ptcl,
         }
     }
+}
+
+fn dynamic_buffer_len(a: u32, b: u32, floor: u32) -> u32 {
+    align_up(a.max(b).max(floor), 256)
 }
 
 const fn align_up(len: u32, alignment: u32) -> u32 {
