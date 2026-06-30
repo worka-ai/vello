@@ -13,9 +13,9 @@ use wgpu::{
 };
 
 use crate::{
+    Error, Result,
     low_level::{BufferProxy, Command, ImageProxy, Recording, ResourceId, ResourceProxy, ShaderId},
     recording::BindType,
-    Error, Result,
 };
 use vello_shaders::cpu::CpuBinding;
 
@@ -584,8 +584,7 @@ impl WgpuEngine {
                                     reason = "Render shaders are only enabled if we have the debug pipeline"
                                 )
                             )]
-                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline
-                            else {
+                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
                                 panic!("cannot issue a dispatch with a render pipeline");
                             };
                             cpass.set_pipeline(pipeline);
@@ -649,8 +648,7 @@ impl WgpuEngine {
                                     reason = "Render shaders are only enabled if we have the debug pipeline"
                                 )
                             )]
-                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline
-                            else {
+                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
                                 panic!("cannot issue a dispatch with a render pipeline");
                             };
                             cpass.set_pipeline(pipeline);
