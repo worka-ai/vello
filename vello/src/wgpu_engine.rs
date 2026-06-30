@@ -1323,10 +1323,7 @@ mod tests {
         let seg_counts = BufferProxy::new(256 * count_size, "vello.seg_counts_buf");
 
         assert_eq!(
-            fallback_direct_workgroups(
-                "vello.path_tiling",
-                &[ResourceProxy::Buffer(seg_counts)]
-            ),
+            fallback_direct_workgroups("vello.path_tiling", &[ResourceProxy::Buffer(seg_counts)]),
             Some((1, 1, 1))
         );
     }
