@@ -1,5 +1,5 @@
 [package]
-name = "vello_encoding"
+name = "fission-vello-encoding"
 version.workspace = true # We mimic Vello's version
 description = "Vello types that represent the data that needs to be rendered."
 categories = ["rendering", "graphics"]
@@ -8,6 +8,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello_encoding"
 
 [package.metadata.docs.rs]
 all-features = true

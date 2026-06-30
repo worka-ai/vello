@@ -969,6 +969,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fd99930f64d146689264c637b5af2f0233a933bef0d8570e2526bf9e083192d"
 
 [[package]]
+name = "fission-vello"
+version = "0.6.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "fission-vello-encoding",
+ "fission-vello-shaders",
+ "futures-intrusive",
+ "log",
+ "peniko 0.5.0",
+ "png 0.17.16",
+ "skrifa 0.37.0",
+ "static_assertions",
+ "thiserror 2.0.16",
+ "wgpu",
+ "wgpu-profiler",
+]
+
+[[package]]
+name = "fission-vello-encoding"
+version = "0.6.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "peniko 0.5.0",
+ "skrifa 0.37.0",
+ "smallvec",
+]
+
+[[package]]
+name = "fission-vello-shaders"
+version = "0.6.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "fission-vello-encoding",
+ "log",
+ "naga",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1345,11 +1385,11 @@ dependencies = [
  "anyhow",
  "clap",
  "env_logger",
+ "fission-vello",
  "futures-intrusive",
  "png 0.17.16",
  "pollster",
  "scenes",
- "vello",
 ]
 
 [[package]]
@@ -2049,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "native_webgl"
-version = "0.6.0"
+version = "0.6.0-fission.1"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
@@ -3047,12 +3087,12 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "clap",
+ "fission-vello",
  "getrandom",
  "image",
  "rand",
  "roxmltree",
  "skrifa 0.37.0",
- "vello",
  "web-time",
 ]
 
@@ -3215,8 +3255,8 @@ name = "simple"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fission-vello",
  "pollster",
- "vello",
  "winit",
 ]
 
@@ -3791,26 +3831,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
-name = "vello"
-version = "0.6.0"
-dependencies = [
- "bytemuck",
- "futures-intrusive",
- "log",
- "peniko 0.5.0",
- "png 0.17.16",
- "skrifa 0.37.0",
- "static_assertions",
- "thiserror 2.0.16",
- "vello_encoding",
- "vello_shaders",
- "wgpu",
- "wgpu-profiler",
-]
-
-[[package]]
 name = "vello_api"
-version = "0.6.0"
+version = "0.6.0-fission.1"
 dependencies = [
  "bytemuck",
  "peniko 0.5.0",
@@ -3869,17 +3891,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello_encoding"
-version = "0.6.0"
-dependencies = [
- "bytemuck",
- "guillotiere",
- "peniko 0.5.0",
- "skrifa 0.37.0",
- "smallvec",
-]
-
-[[package]]
 name = "vello_example_scenes"
 version = "0.0.0"
 dependencies = [
@@ -3897,11 +3908,11 @@ dependencies = [
 
 [[package]]
 name = "vello_filters_cpu"
-version = "0.6.0"
+version = "0.6.0-fission.1"
 
 [[package]]
 name = "vello_hybrid"
-version = "0.6.0"
+version = "0.6.0-fission.1"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -3928,17 +3939,6 @@ dependencies = [
  "vello_hybrid",
  "wgpu",
  "winit",
-]
-
-[[package]]
-name = "vello_shaders"
-version = "0.6.0"
-dependencies = [
- "bytemuck",
- "log",
- "naga",
- "thiserror 2.0.16",
- "vello_encoding",
 ]
 
 [[package]]
@@ -3976,6 +3976,7 @@ name = "vello_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fission-vello",
  "futures-intrusive",
  "image",
  "nv-flip",
@@ -3983,7 +3984,6 @@ dependencies = [
  "png 0.17.16",
  "pollster",
  "scenes",
- "vello",
 ]
 
 [[package]]
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_cpu"
-version = "0.6.0"
+version = "0.6.0-fission.1"
 dependencies = [
  "bytemuck",
  "console_error_panic_hook",
@@ -4600,7 +4600,7 @@ dependencies = [
 
 [[package]]
 name = "wgpu_webgl"
-version = "0.6.0"
+version = "0.6.0-fission.1"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
@@ -5062,6 +5062,8 @@ dependencies = [
  "console_error_panic_hook",
  "console_log",
  "env_logger",
+ "fission-vello",
+ "fission-vello-shaders",
  "getrandom",
  "jni",
  "kurbo 0.12.0",
@@ -5073,8 +5075,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing_android_trace",
- "vello",
- "vello_shaders",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

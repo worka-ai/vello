@@ -172,6 +172,7 @@ impl RenderContext {
                 label: None,
                 required_features: features & maybe_features,
                 required_limits: limits,
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await

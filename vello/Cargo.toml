@@ -1,5 +1,5 @@
 [package]
-name = "vello"
+name = "fission-vello"
 version.workspace = true
 description = "A GPU compute-centric 2D renderer."
 categories = ["rendering", "graphics"]
@@ -8,6 +8,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "vello"
 
 [package.metadata.docs.rs]
 all-features = true
