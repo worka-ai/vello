@@ -124,6 +124,7 @@ fn create_vello_renderer(render_cx: &RenderContext, surface: &RenderSurface<'_>)
         &render_cx.devices[surface.dev_id].device,
         RendererOptions {
             use_cpu: false,
+            use_indirect_dispatch: true,
             antialiasing_support: vello::AaSupport::all(),
             num_init_threads: NonZeroUsize::new(1),
             pipeline_cache: None,

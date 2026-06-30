@@ -282,6 +282,11 @@ pub enum Error {
     #[cfg(feature = "wgpu")]
     #[error("Buffer '{0}' is not available but used for {1}")]
     UnavailableBufferUsed(&'static str, &'static str),
+    /// Attempted to run an indirect command on an adapter without indirect dispatch
+    /// support, but the command has no known conservative direct-dispatch fallback.
+    #[cfg(feature = "wgpu")]
+    #[error("No direct-dispatch fallback is available for shader '{0}'")]
+    UnsupportedDirectDispatchFallback(&'static str),
     /// Failed to async map a buffer.
     /// See [`wgpu::BufferAsyncError`] for more information.
     #[cfg(feature = "wgpu")]
@@ -402,6 +407,14 @@ pub struct RendererOptions {
     // `RenderParams`.
     pub use_cpu: bool,
 
+    /// If true, use GPU indirect dispatch for stages whose workgroup counts are
+    /// produced by earlier GPU stages.
+    ///
+    /// Some native adapters expose compute shaders but not indirect execution.
+    /// Setting this to false keeps those stages on the GPU by issuing
+    /// conservative direct-dispatch fallbacks for indirect stages.
+    pub use_indirect_dispatch: bool,
+
     /// Represents the enabled set of AA configurations. This will be used to determine which
     /// pipeline permutations should be compiled at startup.
     ///
@@ -432,6 +445,7 @@ impl Default for RendererOptions {
     fn default() -> Self {
         Self {
             use_cpu: false,
+            use_indirect_dispatch: true,
             antialiasing_support: AaSupport::all(),
             #[cfg(target_os = "macos")]
             num_init_threads: NonZeroUsize::new(1),
@@ -567,7 +581,11 @@ fn retry_bump_requirements(
 impl Renderer {
     /// Creates a new renderer for the specified device.
     pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
-        let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
+        let mut engine = WgpuEngine::new(
+            options.use_cpu,
+            options.use_indirect_dispatch,
+            options.pipeline_cache.clone(),
+        );
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
@@ -722,7 +740,6 @@ impl Renderer {
                 required: bump,
                 allocated,
             };
-
             if failed {
                 let mut cleanup = Recording::default();
                 render.record_free_fine_resources(&mut cleanup);
@@ -907,7 +924,11 @@ impl Renderer {
     #[doc(hidden)] // End-users of Vello should not have `hot_reload` enabled.
     pub async fn reload_shaders(&mut self, device: &Device) -> Result<(), Error> {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mut engine = WgpuEngine::new(self.options.use_cpu, self.options.pipeline_cache.clone());
+        let mut engine = WgpuEngine::new(
+            self.options.use_cpu,
+            self.options.use_indirect_dispatch,
+            self.options.pipeline_cache.clone(),
+        );
         // We choose not to initialise these shaders in parallel, to ensure the error scope works correctly
         let shaders = shaders::full_shaders(device, &mut engine, &self.options)?;
         #[cfg(feature = "debug_layers")]
@@ -1080,6 +1101,7 @@ impl Renderer {
         })
     }
 }
+
 #[cfg(all(feature = "debug_layers", feature = "wgpu"))]
 pub(crate) struct DebugDownloads<'a> {
     pub lines: wgpu::BufferSlice<'a>,

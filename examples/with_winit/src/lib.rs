@@ -232,6 +232,7 @@ impl ApplicationHandler<UserEvent> for VelloApp {
                     &device_handle.device,
                     RendererOptions {
                         use_cpu: self.use_cpu,
+                        use_indirect_dispatch: true,
                         antialiasing_support: AA_CONFIGS.iter().copied().collect(),
                         num_init_threads: NonZeroUsize::new(self.num_init_threads),
                         pipeline_cache: cache.as_ref().map(|(cache, _, _)| cache.clone()),
@@ -764,6 +765,7 @@ fn run(
             &device_handle.device,
             RendererOptions {
                 use_cpu: args.use_cpu,
+                use_indirect_dispatch: true,
                 antialiasing_support: AA_CONFIGS.iter().copied().collect(),
                 // We currently initialise on one thread on WASM, but mark this here
                 // anyway

@@ -13,9 +13,9 @@ use wgpu::{
 };
 
 use crate::{
-    Error, Result,
     low_level::{BufferProxy, Command, ImageProxy, Recording, ResourceId, ResourceProxy, ShaderId},
     recording::BindType,
+    Error, Result,
 };
 use vello_shaders::cpu::CpuBinding;
 
@@ -36,6 +36,7 @@ pub(crate) struct WgpuEngine {
     #[cfg(not(target_arch = "wasm32"))]
     shaders_to_initialise: Option<Vec<UninitialisedShader>>,
     pub(crate) use_cpu: bool,
+    use_indirect_dispatch: bool,
     /// Overrides from a specific `Image::data`'s [`id`](peniko::Blob::id) to a wgpu `Texture`.
     ///
     /// The `Texture` should have the same size as the `Image`.
@@ -141,9 +142,14 @@ enum TransientBuf<'a> {
 }
 
 impl WgpuEngine {
-    pub fn new(use_cpu: bool, pipeline_cache: Option<PipelineCache>) -> Self {
+    pub fn new(
+        use_cpu: bool,
+        use_indirect_dispatch: bool,
+        pipeline_cache: Option<PipelineCache>,
+    ) -> Self {
         Self {
             use_cpu,
+            use_indirect_dispatch,
             pipeline_cache,
             ..Default::default()
         }
@@ -280,7 +286,6 @@ impl WgpuEngine {
                 CpuShaderType::Missing => {}
             }
         }
-
         let entries = Self::create_bind_group_layout_entries(
             layout.iter().map(|b| (*b, wgpu::ShaderStages::COMPUTE)),
         );
@@ -564,6 +569,7 @@ impl WgpuEngine {
                                 &mut encoder,
                                 &wgpu_shader.bind_group_layout,
                                 bindings,
+                                self.use_indirect_dispatch,
                             );
                             let mut cpass =
                                 encoder.begin_compute_pass(&ComputePassDescriptor::default());
@@ -578,7 +584,8 @@ impl WgpuEngine {
                                     reason = "Render shaders are only enabled if we have the debug pipeline"
                                 )
                             )]
-                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
+                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline
+                            else {
                                 panic!("cannot issue a dispatch with a render pipeline");
                             };
                             cpass.set_pipeline(pipeline);
@@ -607,6 +614,18 @@ impl WgpuEngine {
                             (cpu_shader.shader)(n_wg, &resources);
                         }
                         ShaderKind::Wgpu(wgpu_shader) => {
+                            transient_map.materialize_gpu_buf_for_indirect(
+                                &mut self.bind_map,
+                                &mut self.pool,
+                                device,
+                                queue,
+                                proxy,
+                            );
+                            let direct_counts = if self.use_indirect_dispatch {
+                                None
+                            } else {
+                                fallback_direct_workgroups(shader.label, bindings)
+                            };
                             let bind_group = transient_map.create_bind_group(
                                 &mut self.bind_map,
                                 &mut self.pool,
@@ -615,13 +634,7 @@ impl WgpuEngine {
                                 &mut encoder,
                                 &wgpu_shader.bind_group_layout,
                                 bindings,
-                            );
-                            transient_map.materialize_gpu_buf_for_indirect(
-                                &mut self.bind_map,
-                                &mut self.pool,
-                                device,
-                                queue,
-                                proxy,
+                                self.use_indirect_dispatch,
                             );
                             let mut cpass =
                                 encoder.begin_compute_pass(&ComputePassDescriptor::default());
@@ -636,15 +649,24 @@ impl WgpuEngine {
                                     reason = "Render shaders are only enabled if we have the debug pipeline"
                                 )
                             )]
-                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
+                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline
+                            else {
                                 panic!("cannot issue a dispatch with a render pipeline");
                             };
                             cpass.set_pipeline(pipeline);
                             cpass.set_bind_group(0, &bind_group, &[]);
-                            let buf = self.bind_map.get_gpu_buf(proxy.id).ok_or(
-                                Error::UnavailableBufferUsed(proxy.name, "indirect dispatch"),
-                            )?;
-                            cpass.dispatch_workgroups_indirect(buf, *offset);
+                            if self.use_indirect_dispatch {
+                                let buf = self.bind_map.get_gpu_buf(proxy.id).ok_or(
+                                    Error::UnavailableBufferUsed(proxy.name, "indirect dispatch"),
+                                )?;
+                                cpass.dispatch_workgroups_indirect(buf, *offset);
+                            } else if let Some((x, y, z)) = direct_counts {
+                                if x != 0 && y != 0 && z != 0 {
+                                    cpass.dispatch_workgroups(x, y, z);
+                                }
+                            } else {
+                                return Err(Error::UnsupportedDirectDispatchFallback(shader.label));
+                            }
                             #[cfg(feature = "wgpu-profiler")]
                             profiler.end_query(&mut cpass, query);
                         }
@@ -666,6 +688,7 @@ impl WgpuEngine {
                         &mut encoder,
                         &shader.bind_group_layout,
                         &draw_params.resources,
+                        self.use_indirect_dispatch,
                     );
                     let render_target = transient_map
                         .materialize_external_image_for_render_pass(&draw_params.target);
@@ -1034,6 +1057,35 @@ impl BindMapBuffer {
     }
 }
 
+fn fallback_direct_workgroups(
+    shader_label: &'static str,
+    bindings: &[ResourceProxy],
+) -> Option<(u32, u32, u32)> {
+    const WORKGROUP_SIZE: u64 = 256;
+
+    let (buffer_name, element_size) = match shader_label {
+        "vello.path_count" => (
+            "vello.lines_buf",
+            std::mem::size_of::<vello_encoding::LineSoup>() as u64,
+        ),
+        "vello.path_tiling" => (
+            "vello.seg_counts_buf",
+            std::mem::size_of::<vello_encoding::SegmentCount>() as u64,
+        ),
+        _ => return None,
+    };
+
+    let byte_len = bindings.iter().find_map(|resource| match resource {
+        ResourceProxy::Buffer(proxy) if proxy.name == buffer_name => Some(proxy.size),
+        ResourceProxy::BufferRange { proxy, size, .. } if proxy.name == buffer_name => Some(*size),
+        _ => None,
+    })?;
+
+    let elements = byte_len / element_size;
+    let workgroups = elements.div_ceil(WORKGROUP_SIZE).min(u32::MAX as u64);
+    Some((workgroups as u32, 1, 1))
+}
+
 impl<'a> TransientBindMap<'a> {
     /// Create new transient bind map, seeded from external resources
     fn new(external_resources: &'a [ExternalResource<'_>]) -> Self {
@@ -1085,6 +1137,7 @@ impl<'a> TransientBindMap<'a> {
         encoder: &mut CommandEncoder,
         layout: &BindGroupLayout,
         bindings: &[ResourceProxy],
+        include_indirect_usage: bool,
     ) -> BindGroup {
         for proxy in bindings {
             match proxy {
@@ -1099,12 +1152,16 @@ impl<'a> TransientBindMap<'a> {
                     }
                     match bind_map.buf_map.entry(proxy.id) {
                         Entry::Vacant(v) => {
-                            // TODO: only some buffers will need indirect & vertex, but does it hurt?
-                            let usage = BufferUsages::COPY_SRC
+                            // TODO: only some buffers need vertex usage. Indirect usage is kept
+                            // off direct-dispatch fallback paths because some mobile Metal
+                            // adapters cannot execute indirect dispatches reliably.
+                            let mut usage = BufferUsages::COPY_SRC
                                 | BufferUsages::COPY_DST
                                 | BufferUsages::STORAGE
-                                | BufferUsages::INDIRECT
                                 | BufferUsages::VERTEX;
+                            if include_indirect_usage {
+                                usage |= BufferUsages::INDIRECT;
+                            }
                             let buf = pool.get_buf(proxy.size, proxy.name, usage, device);
                             if bind_map.pending_clears.remove(&proxy.id) {
                                 encoder.clear_buffer(&buf, 0, None);
@@ -1241,5 +1298,41 @@ impl<'a> TransientBindMap<'a> {
                 ResourceProxy::Image(_) => todo!(),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fallback_direct_workgroups;
+    use crate::recording::{BufferProxy, ResourceProxy};
+
+    #[test]
+    fn direct_dispatch_fallback_sizes_path_count_from_lines_capacity() {
+        let line_size = std::mem::size_of::<vello_encoding::LineSoup>() as u64;
+        let lines = BufferProxy::new(257 * line_size, "vello.lines_buf");
+
+        assert_eq!(
+            fallback_direct_workgroups("vello.path_count", &[ResourceProxy::Buffer(lines)]),
+            Some((2, 1, 1))
+        );
+    }
+
+    #[test]
+    fn direct_dispatch_fallback_sizes_path_tiling_from_segment_count_capacity() {
+        let count_size = std::mem::size_of::<vello_encoding::SegmentCount>() as u64;
+        let seg_counts = BufferProxy::new(256 * count_size, "vello.seg_counts_buf");
+
+        assert_eq!(
+            fallback_direct_workgroups(
+                "vello.path_tiling",
+                &[ResourceProxy::Buffer(seg_counts)]
+            ),
+            Some((1, 1, 1))
+        );
+    }
+
+    #[test]
+    fn direct_dispatch_fallback_rejects_unknown_indirect_shader() {
+        assert_eq!(fallback_direct_workgroups("vello.unknown", &[]), None);
     }
 }
