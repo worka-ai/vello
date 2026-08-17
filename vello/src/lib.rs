@@ -263,6 +263,21 @@ pub enum Error {
     #[cfg(feature = "wgpu")]
     #[error("Couldn't find suitable device")]
     NoCompatibleDevice,
+    /// Failed to acquire an adapter from wgpu.
+    #[cfg(feature = "wgpu")]
+    #[error("Failed to request a wgpu adapter: {0}")]
+    RequestAdapter(#[source] wgpu::RequestAdapterError),
+    /// Failed to create a device from an otherwise compatible adapter.
+    #[cfg(feature = "wgpu")]
+    #[error(
+        "Failed to request a wgpu device (features: {required_features:?}, limits: {required_limits:?}): {source}"
+    )]
+    RequestDevice {
+        #[source]
+        source: wgpu::RequestDeviceError,
+        required_features: wgpu::Features,
+        required_limits: wgpu::Limits,
+    },
     /// Failed to create surface.
     /// See [`wgpu::CreateSurfaceError`] for more information.
     #[cfg(feature = "wgpu")]

@@ -71,10 +71,7 @@ impl RenderContext {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<RenderSurface<'w>> {
-        let dev_id = self
-            .device(Some(&surface))
-            .await
-            .ok_or(Error::NoCompatibleDevice)?;
+        let dev_id = self.device_result(Some(&surface)).await?;
 
         let device_handle = &self.devices[dev_id];
         let capabilities = surface.get_capabilities(&device_handle.adapter);
@@ -140,6 +137,15 @@ impl RenderContext {
 
     /// Finds or creates a compatible device handle id.
     pub async fn device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
+        self.device_result(compatible_surface).await.ok()
+    }
+
+    /// Finds or creates a compatible device handle id while preserving the
+    /// adapter or device request error.
+    pub async fn device_result(
+        &mut self,
+        compatible_surface: Option<&Surface<'_>>,
+    ) -> std::result::Result<usize, Error> {
         let compatible = match compatible_surface {
             Some(s) => self
                 .devices
@@ -152,38 +158,52 @@ impl RenderContext {
         if compatible.is_none() {
             return self.new_device(compatible_surface).await;
         }
-        compatible
+        compatible.ok_or(Error::NoCompatibleDevice)
     }
 
     /// Creates a compatible device handle id.
-    async fn new_device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
+    async fn new_device(
+        &mut self,
+        compatible_surface: Option<&Surface<'_>>,
+    ) -> std::result::Result<usize, Error> {
         let adapter =
             wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
                 .await
-                .ok()?;
+                .map_err(Error::RequestAdapter)?;
         let features = adapter.features();
         let limits = Limits::default();
         let maybe_features = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
         #[cfg(feature = "wgpu-profiler")]
         let maybe_features = maybe_features | wgpu_profiler::GpuProfiler::ALL_WGPU_TIMER_FEATURES;
 
+        let required_features = features & maybe_features;
+        log::info!(
+            "Requesting wgpu device from adapter {:?} with features {:?} and limits {:?}",
+            adapter.get_info(),
+            required_features,
+            limits,
+        );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: features & maybe_features,
-                required_limits: limits,
+                required_features,
+                required_limits: limits.clone(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await
-            .ok()?;
+            .map_err(|source| Error::RequestDevice {
+                source,
+                required_features,
+                required_limits: limits,
+            })?;
         let device_handle = DeviceHandle {
             adapter,
             device,
             queue,
         };
         self.devices.push(device_handle);
-        Some(self.devices.len() - 1)
+        Ok(self.devices.len() - 1)
     }
 }
 
