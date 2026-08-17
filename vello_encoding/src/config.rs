@@ -591,57 +591,86 @@ impl BufferSizes {
         let layout_path_tag_words = layout.path_data_base.saturating_sub(layout.path_tag_base);
         let layout_path_complexity = layout_path_data_words
             .saturating_add(layout_path_tag_words)
-            .max(caller_path_complexity);
+            .max(n_paths.saturating_mul(8))
+            .max(n_draw_objects.saturating_mul(8))
+            .max(1);
         let path_complexity = match policy.sizing {
-            BufferSizingMode::CallerEstimate | BufferSizingMode::ExactUpperBound if has_profile => {
-                caller_path_complexity
+            BufferSizingMode::VelloEstimate => layout_path_complexity,
+            BufferSizingMode::CallerEstimate | BufferSizingMode::ExactUpperBound => {
+                layout_path_complexity.max(caller_path_complexity)
             }
-            BufferSizingMode::CallerEstimate
-            | BufferSizingMode::ExactUpperBound
-            | BufferSizingMode::VelloEstimate => layout_path_complexity,
+        };
+        let estimate_margin = if has_profile {
+            policy.safety_margin_percent
+        } else {
+            0
+        };
+        let default_floor = |profiled, unprofiled| {
+            if has_profile { profiled } else { unprofiled }
         };
 
-        let bin_data_len = layout.bin_data_start.saturating_add(dynamic_buffer_len(
-            bin_count.saturating_mul(64),
-            draw_tile_coverage
+        let bin_data_len = layout
+            .bin_data_start
+            .saturating_add(dynamic_buffer_len_with_margin(
+                bin_count.saturating_mul(64),
+                draw_tile_coverage
+                    .saturating_mul(4)
+                    .max(path_complexity.saturating_mul(2)),
+                minimum_bump.binning.max(default_floor(1 << 14, 1 << 18)),
+                estimate_margin,
+            ));
+        // Tile allocation happens after glyph runs have been resolved, so each glyph outline is a
+        // draw object even though the caller retained one text operation. Account for both total
+        // retained draw coverage and the resolved glyph count instead of relying on path coverage.
+        let caller_tile_demand = draw_tile_coverage
+            .saturating_mul(2)
+            .saturating_add(profile.scene.glyphs.saturating_mul(16));
+        let tiles = BufferSize::new(dynamic_buffer_len_with_margin(
+            caller_tile_demand,
+            path_tile_coverage
                 .saturating_mul(4)
-                .max(path_complexity.saturating_mul(2)),
-            minimum_bump.binning.max(1 << 14),
+                .max(n_paths.saturating_mul(16))
+                .max(visible_tiles),
+            minimum_bump.tile.max(default_floor(1 << 14, 1 << 21)),
+            estimate_margin,
         ));
-        let tiles = BufferSize::new(dynamic_buffer_len(
-            path_tile_coverage.saturating_mul(4),
-            n_paths.saturating_mul(16).max(visible_tiles),
-            minimum_bump.tile.max(1 << 14),
-        ));
-        let lines = BufferSize::new(dynamic_buffer_len(
+        let lines = BufferSize::new(dynamic_buffer_len_with_margin(
             path_complexity.saturating_mul(4),
             path_tile_coverage.saturating_mul(2),
-            minimum_bump.lines.max(1 << 14),
+            minimum_bump.lines.max(default_floor(1 << 14, 1 << 21)),
+            estimate_margin,
         ));
-        let seg_counts = BufferSize::new(dynamic_buffer_len(
+        let seg_counts = BufferSize::new(dynamic_buffer_len_with_margin(
             tiles.len(),
             path_complexity.saturating_mul(2),
-            minimum_bump.seg_counts.max(1 << 14),
+            minimum_bump.seg_counts.max(default_floor(1 << 14, 1 << 21)),
+            estimate_margin,
         ));
         let segments = BufferSize::new(
-            dynamic_buffer_len(
+            dynamic_buffer_len_with_margin(
                 lines.len(),
                 path_complexity.saturating_mul(4),
-                minimum_bump.segments.max(1 << 14),
+                minimum_bump.segments.max(default_floor(1 << 14, 1 << 21)),
+                estimate_margin,
             )
             .max(lines.len()),
         );
-        let blend_spill = BufferSize::new(dynamic_buffer_len(
+        let blend_spill = BufferSize::new(dynamic_buffer_len_with_margin(
             visible_tiles.saturating_mul(blend_depth.saturating_sub(4)),
             blend_ops.saturating_mul(TILE_WIDTH * TILE_HEIGHT),
-            minimum_bump.blend.max(1 << 12),
+            minimum_bump.blend.max(default_floor(1 << 12, 1 << 20)),
+            estimate_margin,
         ));
         let ptcl_static = tile_count.saturating_mul(PTCL_INITIAL_ALLOC);
-        let ptcl_dynamic = dynamic_buffer_len(
+        let unprofiled_ptcl_floor = (1_u32 << 23).saturating_sub(ptcl_static);
+        let ptcl_dynamic = dynamic_buffer_len_with_margin(
             draw_tile_coverage.saturating_mul(8),
             visible_tiles
                 .saturating_mul(profile.coverage.max_ops_per_tile.max(1).saturating_mul(4)),
-            minimum_bump.ptcl.max(1 << 15),
+            minimum_bump
+                .ptcl
+                .max(default_floor(1 << 15, unprofiled_ptcl_floor)),
+            estimate_margin,
         );
         let ptcl = BufferSize::new(ptcl_static.saturating_add(ptcl_dynamic));
         let bin_data = BufferSize::new(bin_data_len);
@@ -678,6 +707,10 @@ fn dynamic_buffer_len(a: u32, b: u32, floor: u32) -> u32 {
     align_up(a.max(b).max(floor), 256)
 }
 
+fn dynamic_buffer_len_with_margin(a: u32, b: u32, floor: u32, margin_percent: u32) -> u32 {
+    dynamic_buffer_len(grow_by_percent(a.max(b), margin_percent), 0, floor)
+}
+
 fn grow_by_percent(value: u32, percent: u32) -> u32 {
     if value == 0 {
         return 0;
@@ -691,4 +724,95 @@ fn grow_by_percent(value: u32, percent: u32) -> u32 {
 const fn align_up(len: u32, alignment: u32) -> u32 {
     let mask = alignment - 1;
     len.saturating_add(mask) & !mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn representative_text_layout() -> Layout {
+        Layout {
+            n_draw_objects: 27,
+            n_paths: 17,
+            n_clips: 2,
+            bin_data_start: 64,
+            path_tag_base: 0,
+            path_data_base: 128,
+            draw_tag_base: 1_024,
+            draw_data_base: 1_128,
+            transform_base: 1_256,
+            style_base: 1_384,
+        }
+    }
+
+    fn representative_text_profile(margin_percent: u32) -> RenderWorkloadProfile {
+        RenderWorkloadProfile {
+            target: TargetProfile {
+                width_px: 1_720,
+                height_px: 1_023,
+                scale_factor: 1.0,
+                dirty_tiles: None,
+            },
+            coverage: TileCoverageProfile {
+                tile_width: TILE_WIDTH,
+                tile_height: TILE_HEIGHT,
+                target_tiles: 6_912,
+                visible_tiles: 6_912,
+                total_draw_tile_coverage: 11_127,
+                total_path_tile_coverage: 2_961,
+                max_ops_per_tile: 4,
+                max_blend_depth: 2,
+            },
+            scene: SceneComplexityProfile {
+                draw_ops: 27,
+                path_ops: 17,
+                estimated_path_segments: 40,
+                glyph_runs: 10,
+                glyphs: 326,
+                blend_ops: 2,
+                ..SceneComplexityProfile::default()
+            },
+            policy: DynamicBufferPolicy {
+                safety_margin_percent: margin_percent,
+                ..DynamicBufferPolicy::default()
+            },
+        }
+    }
+
+    #[test]
+    fn unprofiled_rendering_keeps_vello_conservative_floors() {
+        let layout = representative_text_layout();
+        let workgroups = WorkgroupCounts::new(&layout, 108, 64, layout.path_tags_size());
+        let sizes = BufferSizes::new_with_profile(&layout, &workgroups, None, None);
+
+        assert_eq!(sizes.bin_data.len() - layout.bin_data_start, 1 << 18);
+        assert_eq!(sizes.tiles.len(), 1 << 21);
+        assert_eq!(sizes.lines.len(), 1 << 21);
+        assert_eq!(sizes.seg_counts.len(), 1 << 21);
+        assert_eq!(sizes.segments.len(), 1 << 21);
+        assert_eq!(sizes.blend_spill.len(), 1 << 20);
+        assert_eq!(sizes.ptcl.len(), 1 << 23);
+    }
+
+    #[test]
+    fn profiled_tiles_include_draw_coverage_glyphs_and_margin() {
+        let layout = representative_text_layout();
+        let workgroups = WorkgroupCounts::new(&layout, 108, 64, layout.path_tags_size());
+        let without_margin = BufferSizes::new_with_profile(
+            &layout,
+            &workgroups,
+            Some(&representative_text_profile(0)),
+            None,
+        );
+        let with_margin = BufferSizes::new_with_profile(
+            &layout,
+            &workgroups,
+            Some(&representative_text_profile(25)),
+            None,
+        );
+
+        assert_eq!(without_margin.tiles.len(), 27_648);
+        assert_eq!(with_margin.tiles.len(), 34_560);
+        assert!(with_margin.tiles > without_margin.tiles);
+    }
 }
