@@ -93,6 +93,29 @@ pub(crate) fn render_full(
 }
 
 #[cfg(feature = "wgpu")]
+pub(crate) fn render_full_with_profile(
+    scene: &Scene,
+    resolver: &mut Resolver,
+    shaders: &FullShaders,
+    params: &RenderParams,
+    profile: &RenderWorkloadProfile,
+) -> (Recording, ResourceProxy) {
+    let mut render = Render::new();
+    let mut recording = render.render_encoding_coarse_with_profile(
+        scene.encoding(),
+        resolver,
+        shaders,
+        params,
+        Some(profile),
+        None,
+        false,
+    );
+    let out_image = render.out_image();
+    render.record_fine(shaders, &mut recording);
+    (recording, out_image.into())
+}
+
+#[cfg(feature = "wgpu")]
 /// Create a single recording with both coarse and fine render stages.
 ///
 /// This function is not recommended when the scene can be complex, as it does not

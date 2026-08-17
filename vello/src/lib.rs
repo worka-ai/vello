@@ -690,8 +690,29 @@ impl Renderer {
     ) -> Result<()> {
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = profile;
-            return self.render_to_texture(device, queue, scene, texture, params);
+            let Some(profile) = profile else {
+                return self.render_to_texture(device, queue, scene, texture, params);
+            };
+            let (recording, target) = render::render_full_with_profile(
+                scene,
+                &mut self.resolver,
+                &self.shaders,
+                params,
+                profile,
+            );
+            let external_resources = [ExternalResource::Image(
+                *target.as_image().unwrap(),
+                texture,
+            )];
+            return self.engine.run_recording(
+                device,
+                queue,
+                &recording,
+                &external_resources,
+                "render_to_texture profiled",
+                #[cfg(feature = "wgpu-profiler")]
+                &mut self.profiler,
+            );
         }
 
         #[cfg(not(target_arch = "wasm32"))]
