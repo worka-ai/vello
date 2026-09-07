@@ -13,6 +13,12 @@ const TILE_WIDTH: u32 = 16;
 const TILE_HEIGHT: u32 = 16;
 // Keep in sync with `vello_shaders/shader/shared/ptcl.wgsl`.
 const PTCL_INITIAL_ALLOC: u32 = 64;
+const PTCL_INCREMENT: u32 = 256;
+// Conservatively leave more room than the shader's two-word jump headroom because draw
+// operations emit variable-length commands.
+const PTCL_ESTIMATED_WORDS_PER_OP: u32 = 8;
+const PTCL_INLINE_USABLE: u32 = 60;
+const PTCL_INCREMENT_USABLE: u32 = 250;
 
 // TODO: Obtain these from the vello_shaders crate
 pub(crate) const PATH_REDUCE_WG: u32 = 256;
@@ -663,10 +669,15 @@ impl BufferSizes {
         ));
         let ptcl_static = tile_count.saturating_mul(PTCL_INITIAL_ALLOC);
         let unprofiled_ptcl_floor = (1_u32 << 23).saturating_sub(ptcl_static);
+        // The coarse shader allocates whole PTCL increments for each overflowing tile. Convert
+        // peak per-tile pressure into that discrete allocation before applying the safety margin.
+        let ptcl_chunk_floor =
+            ptcl_dynamic_chunk_floor(visible_tiles, profile.coverage.max_ops_per_tile);
         let ptcl_dynamic = dynamic_buffer_len_with_margin(
-            draw_tile_coverage.saturating_mul(8),
+            draw_tile_coverage.saturating_mul(PTCL_ESTIMATED_WORDS_PER_OP),
             visible_tiles
-                .saturating_mul(profile.coverage.max_ops_per_tile.max(1).saturating_mul(4)),
+                .saturating_mul(profile.coverage.max_ops_per_tile.max(1).saturating_mul(4))
+                .max(ptcl_chunk_floor),
             minimum_bump
                 .ptcl
                 .max(default_floor(1 << 15, unprofiled_ptcl_floor)),
@@ -709,6 +720,16 @@ fn dynamic_buffer_len(a: u32, b: u32, floor: u32) -> u32 {
 
 fn dynamic_buffer_len_with_margin(a: u32, b: u32, floor: u32, margin_percent: u32) -> u32 {
     dynamic_buffer_len(grow_by_percent(a.max(b), margin_percent), 0, floor)
+}
+
+fn ptcl_dynamic_chunk_floor(visible_tiles: u32, max_ops_per_tile: u32) -> u32 {
+    let estimated_words_per_tile = max_ops_per_tile.saturating_mul(PTCL_ESTIMATED_WORDS_PER_OP);
+    let chunks_per_tile = estimated_words_per_tile
+        .saturating_sub(PTCL_INLINE_USABLE)
+        .div_ceil(PTCL_INCREMENT_USABLE);
+    visible_tiles
+        .saturating_mul(chunks_per_tile)
+        .saturating_mul(PTCL_INCREMENT)
 }
 
 fn grow_by_percent(value: u32, percent: u32) -> u32 {
@@ -814,5 +835,67 @@ mod tests {
         assert_eq!(without_margin.tiles.len(), 27_648);
         assert_eq!(with_margin.tiles.len(), 34_560);
         assert!(with_margin.tiles > without_margin.tiles);
+    }
+
+    #[test]
+    fn ptcl_chunk_floor_starts_after_inline_capacity() {
+        assert_eq!(ptcl_dynamic_chunk_floor(1, 7), 0);
+        assert_eq!(ptcl_dynamic_chunk_floor(1, 8), PTCL_INCREMENT);
+    }
+
+    #[test]
+    fn ptcl_chunk_floor_adds_chunks_at_effective_increment_capacity() {
+        assert_eq!(ptcl_dynamic_chunk_floor(1, 38), PTCL_INCREMENT);
+        assert_eq!(ptcl_dynamic_chunk_floor(1, 39), 2 * PTCL_INCREMENT);
+    }
+
+    #[test]
+    fn retina_profile_applies_margin_after_ptcl_chunk_floor() {
+        let layout = representative_text_layout();
+        let width_in_tiles = 189;
+        let height_in_tiles = 108;
+        let target_tiles = width_in_tiles * height_in_tiles;
+        let water_tiles = 189 * 71;
+        let workgroups = WorkgroupCounts::new(
+            &layout,
+            width_in_tiles,
+            height_in_tiles,
+            layout.path_tags_size(),
+        );
+        let profile = RenderWorkloadProfile {
+            target: TargetProfile {
+                width_px: 3_024,
+                height_px: 1_724,
+                scale_factor: 2.0,
+                dirty_tiles: None,
+            },
+            coverage: TileCoverageProfile {
+                tile_width: TILE_WIDTH,
+                tile_height: TILE_HEIGHT,
+                target_tiles,
+                visible_tiles: target_tiles,
+                total_draw_tile_coverage: water_tiles * 30,
+                total_path_tile_coverage: water_tiles * 30,
+                max_ops_per_tile: 30,
+                max_blend_depth: 1,
+            },
+            scene: SceneComplexityProfile {
+                draw_ops: 15,
+                clip_ops: 15,
+                max_clip_depth: 1,
+                path_ops: 15,
+                ..SceneComplexityProfile::default()
+            },
+            policy: DynamicBufferPolicy {
+                safety_margin_percent: 25,
+                ..DynamicBufferPolicy::default()
+            },
+        };
+
+        let sizes = BufferSizes::new_with_profile(&layout, &workgroups, Some(&profile), None);
+        let ptcl_static = target_tiles * PTCL_INITIAL_ALLOC;
+        let chunk_floor_with_margin = target_tiles * PTCL_INCREMENT * 125 / 100;
+
+        assert_eq!(sizes.ptcl.len() - ptcl_static, chunk_floor_with_margin);
     }
 }
