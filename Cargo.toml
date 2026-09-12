@@ -1,33 +1,34 @@
 [workspace]
 resolver = "2"
 members = [
-    "vello",
-    "vello_encoding",
-    "vello_shaders",
+    "research/vello_research",
+    "research/vello_encoding",
+    "research/vello_shaders",
+    "research/vello_research_tests",
+    "research/xtask",
+
+    "research/examples/headless",
+    "tools/run_wasm",
+    "research/examples/scenes",
+    "research/examples/simple",
+    "research/examples/with_winit",
+
+    "vello_cpu",
+    "vello_cpu/examples/wasm_cpu",
+    "vello_cpu/examples/winit",
+    "vello_gpu",
+    "vello_gpu/examples/native_webgl",
+    "vello_gpu/examples/wgpu_webgl",
+    "vello_gpu/examples/winit",
+
+    "vello_bench",
+    "vello_common",
+    "vello_gpu_shaders",
+    "vello_toy",
     "vello_tests",
-    "xtask",
-
-    "examples/headless",
-    "examples/run_wasm",
-    "examples/scenes",
-    "examples/simple",
-    "examples/with_winit",
-
-    "sparse_strips/vello_api",
-    "sparse_strips/vello_bench",
-    "sparse_strips/vello_common",
-    "sparse_strips/vello_cpu",
-    "sparse_strips/vello_cpu/examples/wasm_cpu",
-    "sparse_strips/vello_hybrid",
-    "sparse_strips/vello_sparse_shaders",
-    "sparse_strips/vello_hybrid/examples/native_webgl",
-    "sparse_strips/vello_example_scenes",
-    "sparse_strips/vello_hybrid/examples/wgpu_webgl",
-    "sparse_strips/vello_hybrid/examples/winit",
-    "sparse_strips/vello_toy",
-    "sparse_strips/vello_dev_macros",
-    "sparse_strips/vello_sparse_tests",
-    "image_filters/vello_filters_cpu",
+    "vello_tests/vello_dev_macros",
+    "vello_tests/vello_example_scenes",
+    "glifo",
 ]
 
 [workspace.package]
@@ -37,18 +38,17 @@ members = [
 # NOTE: When bumping this, remember to also bump the aforementioned other packages'
 #       version in the dependencies section at the bottom of this file.
 #       Additionally, bump the Vello dependency version in the 'simple' example.
-version = "0.6.0-fission.2"
+version = "0.10.0"
 
 edition = "2024"
 # Keep in sync with RUST_MIN_VER in .github/workflows/ci.yml, with the relevant README.md files
-# and with the MSRV in the `Unreleased` section of CHANGELOG.md.
-rust-version = "1.86"
+# and with the MSRV in the `Unreleased` section of research/CHANGELOG.md.
+rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/worka-ai/vello"
+repository = "https://github.com/linebender/vello"
 
 [workspace.lints]
-
-# LINEBENDER LINT SET - Cargo.toml - v5
+# LINEBENDER LINT SET - Cargo.toml - v7
 # See https://linebender.org/wiki/canonical-lints/
 rust.keyword_idents_2024 = "forbid"
 rust.non_ascii_idents = "forbid"
@@ -59,18 +59,19 @@ rust.elided_lifetimes_in_paths = "warn"
 rust.missing_debug_implementations = "warn"
 rust.missing_docs = "warn"
 rust.trivial_numeric_casts = "warn"
-rust.unexpected_cfgs = "warn"
 rust.unnameable_types = "warn"
 rust.unreachable_pub = "warn"
 rust.unused_import_braces = "warn"
 rust.unused_lifetimes = "warn"
 rust.unused_macro_rules = "warn"
+rust.unused_qualifications = "warn"
 
 clippy.too_many_arguments = "allow"
 
 clippy.allow_attributes_without_reason = "warn"
 clippy.cast_possible_truncation = "warn"
 clippy.collection_is_never_read = "warn"
+clippy.default_trait_access = "warn"
 clippy.dbg_macro = "warn"
 clippy.debug_assert_with_mut_call = "warn"
 clippy.doc_markdown = "warn"
@@ -82,7 +83,6 @@ clippy.missing_assert_message = "warn"
 clippy.missing_fields_in_debug = "warn"
 clippy.same_functions_in_if_condition = "warn"
 clippy.semicolon_if_nothing_returned = "warn"
-clippy.shadow_unrelated = "warn"
 clippy.should_panic_without_expect = "warn"
 clippy.todo = "warn"
 clippy.unseparated_literal_suffix = "warn"
@@ -95,59 +95,85 @@ clippy.wildcard_dependencies = "warn"
 # END LINEBENDER LINT SET
 
 [workspace.dependencies]
-vello = { package = "fission-vello", version = "0.6.0-fission.2", path = "vello" }
-vello_encoding = { package = "fission-vello-encoding", version = "0.6.0-fission.2", path = "vello_encoding" }
-vello_shaders = { package = "fission-vello-shaders", version = "0.6.0-fission.2", path = "vello_shaders" }
-bytemuck = { version = "1.23.0", features = ["derive"] }
-skrifa = { version = "0.37.0", default-features = false, features = ["autohint_shaping"] }
+vello = { version = "0.10.0", path = "research/vello_research" }
+vello_encoding = { version = "0.10.0", path = "research/vello_encoding" }
+vello_shaders = { version = "0.10.0", path = "research/vello_shaders" }
+bytemuck = { version = "1.25.0", features = ["derive"] }
+skrifa = { version = "0.44.0", default-features = false, features = ["autohint_shaping"] }
 # The version of kurbo used below should be kept in sync
 # with the version of kurbo used by peniko.
-peniko = { version = "0.5.0", default-features = false }
+peniko = { version = "0.6.1", default-features = false }
 # FIXME: This can be removed once peniko supports the schemars feature.
-kurbo = { version = "0.12.0", default-features = false }
+kurbo = { version = "0.13.1", default-features = false }
 futures-intrusive = "0.5.0"
+guillotiere = { version = "0.7.0", default-features = false }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher"] }
+core_maths = "0.1.1"
+foldhash = { version = "0.2.0", default-features = false }
 smallvec = "1.15.1"
 static_assertions = "1.1.0"
-thiserror = "2.0.12"
-oxipng = { version = "9.1.5", default-features = false }
-png = "0.17.16"
-rayon = { version = "1.10.0" }
-thread_local = "1.1.8"
+thiserror = { version = "2.0.18", default-features = false }
+oxipng = { version = "10.1.1", default-features = false }
+png = "0.18.1"
+rayon = { version = "1.12.0" }
+thread_local = "1.1.9"
 crossbeam-channel = "0.5.15"
 ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
-fearless_simd = { git = "https://github.com/linebender/fearless_simd", rev = "a6723a80adeba198ab8b1323caff3ca75a080e48", default-features = false }
+fearless_simd = { version = "0.7.0", default-features = false }
 
-# The below crates are experimental!
-vello_api = { path = "sparse_strips/vello_api", default-features = false }
-vello_common = { version = "0.0.1", path = "sparse_strips/vello_common", default-features = false }
-vello_cpu = { path = "sparse_strips/vello_cpu" }
-vello_hybrid = { path = "sparse_strips/vello_hybrid" }
-vello_sparse_shaders = { path = "sparse_strips/vello_sparse_shaders" }
-vello_example_scenes = { path = "sparse_strips/vello_example_scenes" }
-vello_dev_macros = { path = "sparse_strips/vello_dev_macros" }
+# Unlike the other crates, please do not update these before a release
+# unless absolutely necessary.
+js-sys = "0.3.91"
+wasm-bindgen = "0.2.114"
+wasm-bindgen-futures = "0.4.64"
+wasm-bindgen-test = "0.3.64"
+web-sys = "0.3.91"
 
-# NOTE: Make sure to keep this in sync with the version badge in README.md and vello/README.md
-wgpu = { version = "26.0.1", default-features = false, features = ["std", "wgsl"] }
-log = "0.4.27"
-image = { version = "0.25.6", default-features = false }
+vello_common = { version = "0.2.0", path = "vello_common", default-features = false }
+vello_cpu = { version = "0.2.0", path = "vello_cpu" }
+vello_gpu = { version = "0.2.0", path = "vello_gpu", default-features = false }
+vello_gpu_shaders = { version = "0.2.0", path = "vello_gpu_shaders" }
+glifo = { version = "0.3.0", path = "glifo", default-features = false }
+vello_example_scenes = { path = "vello_tests/vello_example_scenes" }
+vello_dev_macros = { path = "vello_tests/vello_dev_macros" }
+
+# NOTE: The wgpu and naga versions should be kept in sync, and make sure to keep this
+# in sync with the version badge in README.md and research/vello_research/README.md
+wgpu = { version = "29.0.3", default-features = false, features = ["std", "wgsl"] }
+naga = { version = "29.0.3", default-features = false }
+log = "0.4.29"
+image = { version = "0.25.10", default-features = false }
 
 # Used for examples
-clap = "4.5.38"
-anyhow = "1.0.98"
+clap = "4.6.1"
+anyhow = "1.0.102"
 pollster = "0.4.0"
 web-time = "1.1.0"
-wgpu-profiler = "0.24.0"
-winit = "0.30.10"
-scenes = { path = "examples/scenes" }
+wgpu-profiler = "0.27.0"
+winit = "0.30.13"
+scenes = { path = "research/examples/scenes" }
 svg = "0.18.0"
 criterion = { version = "0.5.1", default-features = false }
-rand = { version = "0.9.1", default-features = false, features = ["std_rng"] }
-usvg = { version = "0.45.1" }
-once_cell = "1.21.3"
+rand = { version = "0.9.4", default-features = false, features = ["std_rng"] }
+usvg = { version = "0.47" }
+once_cell = "1.21.4"
 console_error_panic_hook = "0.1.7"
 console_log = "1.0"
 
 # Used for testing
-proc-macro2 = "1.0.95"
-syn = { version = "2.0.101", features = ["full", "extra-traits"] }
-quote = "1.0.40"
+proc-macro2 = "1.0.106"
+syn = { version = "2.0.117", features = ["full", "extra-traits"] }
+quote = "1.0.45"
+serde = { version = "1.0.228", default-features = false }
+serde_json = "1.0.149"
+
+[profile.wasm-size]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.instrument]
+inherits = "release"
+debug = true
+strip = "none"

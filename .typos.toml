@@ -10,6 +10,9 @@
 [default.extend-identifiers]
 thm = "thm"
 wdth = "wdth"
+canva = "canva"
+ArthurCose = "ArthurCose"
+ba = "ba"
 
 # Match Inside a Word - Case Insensitive
 [default.extend-words]

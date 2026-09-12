@@ -1,0 +1,30 @@
+[package]
+name = "scenes"
+description = "Vello scenes used in the other examples."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vello = { workspace = true }
+skrifa = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+image = { workspace = true, features = ["jpeg"] }
+rand = { workspace = true, features = ["thread_rng"] }
+
+# for pico_svg
+roxmltree = "0.20.0"
+bytemuck.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = { workspace = true }
+
+[target.wasm32-unknown-unknown.dependencies]
+# We have a transitive dependency on getrandom and it does not automatically
+# support wasm32-unknown-unknown. We need to enable the js feature.
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
