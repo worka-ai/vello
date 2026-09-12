@@ -1107,6 +1107,85 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "fission-glifo"
+version = "0.3.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "core_maths",
+ "fission-vello-common",
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+ "log",
+ "peniko",
+ "png",
+ "skrifa 0.44.0",
+ "smallvec",
+]
+
+[[package]]
+name = "fission-vello-common"
+version = "0.2.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "fearless_simd",
+ "guillotiere",
+ "libm",
+ "log",
+ "peniko",
+ "png",
+ "roxmltree 0.20.0",
+ "smallvec",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "fission-vello-cpu"
+version = "0.2.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "crossbeam-channel",
+ "fearless_simd",
+ "fission-glifo",
+ "fission-vello-common",
+ "hashbrown 0.17.1",
+ "log",
+ "ordered-channel",
+ "png",
+ "rayon",
+ "thread_local",
+]
+
+[[package]]
+name = "fission-vello-gpu"
+version = "0.2.0-fission.1"
+dependencies = [
+ "bytemuck",
+ "fission-glifo",
+ "fission-vello-common",
+ "fission-vello-gpu-shaders",
+ "hashbrown 0.17.1",
+ "js-sys",
+ "log",
+ "png",
+ "pollster",
+ "roxmltree 0.20.0",
+ "thiserror 2.0.18",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
+name = "fission-vello-gpu-shaders"
+version = "0.2.0-fission.1"
+dependencies = [
+ "naga",
+ "wesl",
+ "wesl-macros",
+ "wgsl-parse",
+ "wgsl-types",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,22 +1428,6 @@ dependencies = [
  "khronos_api",
  "log",
  "xml-rs",
-]
-
-[[package]]
-name = "glifo"
-version = "0.3.0"
-dependencies = [
- "bytemuck",
- "core_maths",
- "foldhash 0.2.0",
- "hashbrown 0.17.1",
- "log",
- "peniko",
- "png",
- "skrifa 0.44.0",
- "smallvec",
- "vello_common",
 ]
 
 [[package]]
@@ -2473,11 +2536,11 @@ version = "0.10.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
+ "fission-vello-common",
+ "fission-vello-gpu",
  "js-sys",
  "log",
- "vello_common",
  "vello_example_scenes",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -4465,56 +4528,23 @@ name = "vello_bench"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "fission-vello-common",
+ "fission-vello-cpu",
  "image",
  "parley",
  "rand",
  "smallvec",
  "usvg",
- "vello_common",
- "vello_cpu",
  "vello_dev_macros",
-]
-
-[[package]]
-name = "vello_common"
-version = "0.2.0"
-dependencies = [
- "bytemuck",
- "fearless_simd",
- "guillotiere",
- "libm",
- "log",
- "peniko",
- "png",
- "roxmltree 0.20.0",
- "smallvec",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "vello_cpu"
-version = "0.2.0"
-dependencies = [
- "bytemuck",
- "crossbeam-channel",
- "fearless_simd",
- "glifo",
- "hashbrown 0.17.1",
- "log",
- "ordered-channel",
- "png",
- "rayon",
- "thread_local",
- "vello_common",
 ]
 
 [[package]]
 name = "vello_cpu_winit"
 version = "0.0.0"
 dependencies = [
+ "fission-vello-common",
+ "fission-vello-cpu",
  "softbuffer",
- "vello_common",
- "vello_cpu",
  "vello_example_scenes",
  "winit",
 ]
@@ -4546,57 +4576,27 @@ dependencies = [
  "bytemuck",
  "console_error_panic_hook",
  "console_log",
- "glifo",
+ "fission-glifo",
+ "fission-vello-common",
+ "fission-vello-cpu",
+ "fission-vello-gpu",
  "image",
  "log",
  "parley",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common",
- "vello_cpu",
- "vello_gpu",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "vello_gpu"
-version = "0.2.0"
-dependencies = [
- "bytemuck",
- "glifo",
- "hashbrown 0.17.1",
- "js-sys",
- "log",
- "png",
- "pollster",
- "roxmltree 0.20.0",
- "thiserror 2.0.18",
- "vello_common",
- "vello_gpu_shaders",
- "web-sys",
- "wgpu",
-]
-
-[[package]]
-name = "vello_gpu_shaders"
-version = "0.2.0"
-dependencies = [
- "naga",
- "wesl",
- "wesl-macros",
- "wgsl-parse",
- "wgsl-types",
 ]
 
 [[package]]
 name = "vello_gpu_winit"
 version = "0.0.0"
 dependencies = [
+ "fission-vello-common",
+ "fission-vello-gpu",
  "pollster",
- "vello_common",
  "vello_example_scenes",
- "vello_gpu",
  "wgpu",
  "winit",
 ]
@@ -4633,7 +4633,10 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "fearless_simd",
- "glifo",
+ "fission-glifo",
+ "fission-vello-common",
+ "fission-vello-cpu",
+ "fission-vello-gpu",
  "image",
  "oxipng",
  "pollster",
@@ -4641,10 +4644,7 @@ dependencies = [
  "serde_json",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common",
- "vello_cpu",
  "vello_dev_macros",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -4658,11 +4658,11 @@ name = "vello_toy"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "fission-vello-common",
+ "fission-vello-cpu",
  "image",
  "svg",
  "usvg",
- "vello_common",
- "vello_cpu",
 ]
 
 [[package]]
@@ -4858,10 +4858,10 @@ dependencies = [
  "bytemuck",
  "console_error_panic_hook",
  "console_log",
+ "fission-vello-common",
+ "fission-vello-cpu",
  "js-sys",
  "log",
- "vello_common",
- "vello_cpu",
  "vello_example_scenes",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5262,11 +5262,11 @@ version = "0.10.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
+ "fission-vello-common",
+ "fission-vello-gpu",
  "js-sys",
  "log",
- "vello_common",
  "vello_example_scenes",
- "vello_gpu",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

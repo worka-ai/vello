@@ -1075,14 +1075,14 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                     ImageSource::OpaqueId { id, .. } => {
                         resources.image_resolver.resolve(*id).unwrap_or_else(|| {
                             log::error!("image {id:?} is not registered; drawing nothing");
-                            alloc::sync::Arc::new(vello_common::pixmap::Pixmap::new(1, 1))
+                            alloc::sync::Arc::new(Pixmap::new(1, 1))
                         })
                     }
                     ImageSource::ExternalTexture { .. } => {
                         log::error!(
                             "external textures are not supported by vello_cpu; drawing nothing"
                         );
-                        alloc::sync::Arc::new(vello_common::pixmap::Pixmap::new(1, 1))
+                        alloc::sync::Arc::new(Pixmap::new(1, 1))
                     }
                 };
                 let tint = image.tint.as_ref();
