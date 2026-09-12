@@ -33,9 +33,9 @@
 //! intermediate representation.
 
 use crate::filter::{FilterData, FilterLayerPlacement};
-use crate::geometry::{RectU16, SizeU16};
+use crate::geometry::{PaddingU16, RectU16, SizeU16};
 use crate::mask::Mask;
-use crate::peniko::BlendMode;
+use crate::peniko::{BlendMode, Compose, Mix};
 use crate::strip::Strip;
 use crate::util::RectExt;
 use alloc::vec::Vec;
@@ -53,7 +53,7 @@ pub trait Drawable {
 }
 
 /// A node in the recorded render graph.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     /// A contiguous (possibly empty) batch of draw commands indexing [`CommandRecorder::draws`].
     pub draws: Range<u32>,
@@ -303,6 +303,77 @@ impl<D> CommandRecorder<D> {
         });
 
         id
+    }
+
+    /// Record a backdrop filter clipped to `props.clip_path`.
+    ///
+    /// This is CSS `backdrop-filter`. The content already recorded into the active layer, its
+    /// backdrop root, is filtered and composited back in place, clipped to the clip path. Only
+    /// the active layer is seen, never its ancestors: a backdrop filter inside an opacity layer
+    /// filters that layer's content, exactly as the specification scopes it.
+    ///
+    /// The backdrop is a filter layer whose nodes are a snapshot of the active layer's nodes so
+    /// far. Nodes are draw ranges and child layer ids, so the snapshot reuses the strips that are
+    /// already generated rather than re-tessellating anything, and both renderers already
+    /// render a filter layer's contents before the parent composites it. The snapshot is taken
+    /// in the parent's coordinate space, so the layer uses no source shift; content beyond the
+    /// scene edge is simply absent from the blur, as it is at a browser viewport edge.
+    pub fn record_backdrop_filter(&mut self, props: LayerProps, mut filter_data: FilterData) {
+        let Some(clip) = props.clip_path.as_ref() else {
+            log::error!("a backdrop filter needs a clip path; skipping it");
+            return;
+        };
+        let clip_bbox = clip.bbox;
+        if clip_bbox.is_empty() {
+            return;
+        }
+
+        filter_data.source_padding = PaddingU16::new(0, 0, 0, 0);
+        let placement = FilterLayerPlacement::new(clip_bbox, &filter_data);
+        if placement.pixmap_bbox.is_empty() {
+            return;
+        }
+
+        let snapshot: SmallVec<[Node; 2]> = match self.active_layer {
+            Some(id) => self.layers[id as usize].nodes.iter().cloned().collect(),
+            None => self.nodes.iter().cloned().collect(),
+        };
+
+        let depth = self.layer_stack.len() + 1;
+        self.max_layer_depth = self.max_layer_depth.max(depth);
+        // The filtered backdrop replaces the pixels under the clip, which is a destructive
+        // composite even though nothing about it is visually "blended".
+        self.has_non_default_blend = true;
+        if self.active_layer.is_none() {
+            self.root_is_blend_target = true;
+        }
+
+        let size = placement.pixmap_bbox.into();
+        self.largest_layer_size = Some(
+            self.largest_layer_size
+                .map_or(size, |current| current.max(size)),
+        );
+        self.largest_filter_layer_size = Some(
+            self.largest_filter_layer_size
+                .map_or(size, |current| current.max(size)),
+        );
+
+        let id = self.push_layer_metadata(RecordedLayer {
+            props: LayerProps {
+                blend_mode: BlendMode::new(Mix::Normal, Compose::Copy),
+                ..props
+            },
+            nodes: snapshot,
+            kind: RecordedLayerKind::Filter {
+                filter_data,
+                placement,
+            },
+            depth,
+            bbox: placement.pixmap_bbox,
+        });
+        self.filter_layers.push(id);
+        self.push_layer_node(id);
+        self.record_bbox(|| Some(placement.dest_bbox.intersect(clip_bbox)));
     }
 
     /// Pop the currently active layer.

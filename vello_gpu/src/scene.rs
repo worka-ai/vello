@@ -707,6 +707,53 @@ impl Scene {
         self.root_transforms.pop_root();
     }
 
+    /// Filter what is already drawn beneath `clip_path` and composite the result back in place.
+    ///
+    /// This is CSS `backdrop-filter`. The backdrop is the content drawn so far into the current
+    /// layer only: a backdrop filter inside an opacity, blend or filter layer sees that layer's
+    /// contents and not what lies outside it. The clip path and the filter's parameters are
+    /// affected by the current transform.
+    pub fn apply_backdrop_filter(&mut self, clip_path: &BezPath, filter: Filter) {
+        let layer_transform = self.effective_path_transform();
+        let filter_data = FilterData::new(filter, layer_transform);
+
+        // Generated in the active layer's space: no root viewport is pushed, because the backdrop
+        // is a snapshot of content already recorded there.
+        let clip = {
+            let mut strip_storage = self.strip_storage.borrow_mut();
+            let strip_start = strip_storage.strips.len();
+            self.viewport_state
+                .with_generator_and_clip(|strip_generator, existing_clip| {
+                    strip_generator.generate_filled_path(
+                        clip_path,
+                        self.render_state.fill_rule,
+                        layer_transform,
+                        self.aliasing_threshold,
+                        &mut strip_storage,
+                        existing_clip,
+                    );
+
+                    let strip_range = strip_start..strip_storage.strips.len();
+                    LayerClip {
+                        bbox: strip_bbox(&strip_storage.strips[strip_range.clone()])
+                            .unwrap_or(RectU16::ZERO),
+                        strip_range,
+                        thread_idx: 0,
+                    }
+                })
+        };
+
+        self.recorder.record_backdrop_filter(
+            LayerProps {
+                blend_mode: BlendMode::default(),
+                opacity: 1.0,
+                mask: None,
+                clip_path: Some(clip),
+            },
+            filter_data,
+        );
+    }
+
     /// Set the blend mode for subsequent rendering operations.
     ///
     /// # Panics

@@ -23,6 +23,27 @@ pub(crate) trait Dispatcher: Debug + Send {
     fn supports_filters(&self) -> bool {
         true
     }
+
+    /// Filter the content already recorded into the active layer, clipped to `clip_path`.
+    ///
+    /// See [`RenderContext::apply_backdrop_filter`](crate::RenderContext::apply_backdrop_filter).
+    fn apply_backdrop_filter(
+        &mut self,
+        clip_path: &BezPath,
+        fill_rule: Fill,
+        clip_transform: Affine,
+        aliasing_threshold: Option<u8>,
+        filter_data: FilterData,
+    ) {
+        let _ = (
+            clip_path,
+            fill_rule,
+            clip_transform,
+            aliasing_threshold,
+            filter_data,
+        );
+        log::error!("backdrop filters are not supported by this dispatcher; skipping it");
+    }
     fn has_layers(&self) -> bool;
     fn fill_path(
         &mut self,

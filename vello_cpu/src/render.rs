@@ -546,6 +546,34 @@ impl RenderContext {
         self.push_layer(None, None, None, None, Some(filter));
     }
 
+    /// Filter what is already drawn beneath `clip_path` and composite the result back in place.
+    ///
+    /// This is CSS `backdrop-filter`. The backdrop is the content drawn so far into the current
+    /// layer only: a backdrop filter inside an opacity, blend or filter layer sees that layer's
+    /// contents and not what lies outside it. The clip path and the filter's parameters are
+    /// affected by the current transform.
+    ///
+    /// With multi-threaded rendering, backdrop filters are logged at error level and ignored.
+    pub fn apply_backdrop_filter(&mut self, clip_path: &BezPath, filter: Filter) {
+        if !self.dispatcher.supports_filters() {
+            log::error!(
+                "backdrop filters are not supported with multi-threaded rendering; skipping it"
+            );
+            return;
+        }
+        let layer_transform = self
+            .root_transforms
+            .effective_path_transform(self.transforms());
+        let filter_data = FilterData::new(filter, layer_transform);
+        self.dispatcher.apply_backdrop_filter(
+            clip_path,
+            self.state.fill_rule,
+            layer_transform,
+            self.aliasing_threshold,
+            filter_data,
+        );
+    }
+
     /// Set the aliasing threshold.
     ///
     /// If set to `None` (which is the recommended option in nearly all cases),

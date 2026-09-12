@@ -225,65 +225,173 @@ impl SingleThreadedDispatcher {
     ) -> FilterContext {
         // TODO: Reuse across frames so that pixmaps can be reused.
         let mut filter_ctx = FilterContext::new(self.recorder.layers.len());
-        // We record filter layers upon "push", so nested filter layers get added after their
-        // parents. Subsequent sibling filter layers also get added after the previous layer they
-        // are composited into. Therefore, iterating in reverse order is enough to ensure that all
-        // dependencies have been rendered before they are invoked.
-        for id in self.recorder.filter_layers.iter().rev().copied() {
-            let RecordedLayerKind::Filter {
-                filter_data: filter_plan,
-                placement,
-            } = &self.recorder.layers[id as usize].kind
-            else {
-                unreachable!("filter_layers only contains filter layers");
-            };
-            let pixmap_bbox = placement.pixmap_bbox;
-            if pixmap_bbox.is_empty() {
-                continue;
-            }
-
-            let width = pixmap_bbox.width();
-            let height = pixmap_bbox.height();
-            // TODO: See https://github.com/linebender/vello/pull/1701#discussion_r3400709986, explore
-            // using pools for more resources.
-            let mut pixmap = Pixmap::new(width, height);
-            let params = FineRenderParams {
-                scene_size: (width, height),
-                target_offset: (0, 0),
-            };
-
-            self.bucket_and_rasterize::<S, F>(
+        let mut rasterized = alloc::vec![false; self.recorder.layers.len()];
+        // Rasterize each filter layer after every filter layer its contents composite. Nesting
+        // alone would allow a reverse walk in creation order, but a backdrop filter is created
+        // *after* the layers its snapshot references, so dependency order is what is required.
+        for id in self.recorder.filter_layers.iter().copied() {
+            self.rasterize_filter_layer::<S, F>(
                 simd,
-                &self.recorder.layers[id as usize].nodes,
-                pixmap_bbox,
-                &filter_ctx,
-                (&mut pixmap).into(),
-                params,
-                TargetInit::Clear(PremulColor::from_alpha_color(AlphaColor::TRANSPARENT)),
-                false,
+                id,
+                &mut filter_ctx,
+                &mut rasterized,
                 encoded_paints,
                 image_resolver,
             );
-
-            F::filter_layer(
-                &mut pixmap,
-                &filter_plan.filter,
-                filter_ctx.scratch(),
-                filter_plan.transform,
-            );
-
-            // Save the filtered pixmap to disk for debugging.
-            // #[cfg(all(debug_assertions, feature = "std", feature = "png"))]
-            // save_filtered_layer_debug(&pixmap, id);
-
-            filter_ctx.set_layer(id as usize, pixmap);
         }
 
         filter_ctx
     }
+
+    fn rasterize_filter_dependencies<S: Simd, F: FineKernel<S>>(
+        &self,
+        simd: S,
+        nodes: &[Node],
+        filter_ctx: &mut FilterContext,
+        rasterized: &mut [bool],
+        encoded_paints: &[EncodedPaint],
+        image_resolver: &dyn ImageResolver,
+    ) {
+        for node in nodes {
+            let Some(child) = node.layer else {
+                continue;
+            };
+            match &self.recorder.layers[child as usize].kind {
+                RecordedLayerKind::Filter { .. } => self.rasterize_filter_layer::<S, F>(
+                    simd,
+                    child,
+                    filter_ctx,
+                    rasterized,
+                    encoded_paints,
+                    image_resolver,
+                ),
+                RecordedLayerKind::Regular => self.rasterize_filter_dependencies::<S, F>(
+                    simd,
+                    &self.recorder.layers[child as usize].nodes,
+                    filter_ctx,
+                    rasterized,
+                    encoded_paints,
+                    image_resolver,
+                ),
+            }
+        }
+    }
+
+    fn rasterize_filter_layer<S: Simd, F: FineKernel<S>>(
+        &self,
+        simd: S,
+        id: u32,
+        filter_ctx: &mut FilterContext,
+        rasterized: &mut [bool],
+        encoded_paints: &[EncodedPaint],
+        image_resolver: &dyn ImageResolver,
+    ) {
+        if rasterized[id as usize] {
+            return;
+        }
+        rasterized[id as usize] = true;
+
+        let layer = &self.recorder.layers[id as usize];
+        self.rasterize_filter_dependencies::<S, F>(
+            simd,
+            &layer.nodes,
+            filter_ctx,
+            rasterized,
+            encoded_paints,
+            image_resolver,
+        );
+
+        let RecordedLayerKind::Filter {
+            filter_data: filter_plan,
+            placement,
+        } = &layer.kind
+        else {
+            return;
+        };
+        let pixmap_bbox = placement.pixmap_bbox;
+        if pixmap_bbox.is_empty() {
+            return;
+        }
+
+        let width = pixmap_bbox.width();
+        let height = pixmap_bbox.height();
+        // TODO: See https://github.com/linebender/vello/pull/1701#discussion_r3400709986, explore
+        // using pools for more resources.
+        let mut pixmap = Pixmap::new(width, height);
+        let params = FineRenderParams {
+            scene_size: (width, height),
+            target_offset: (0, 0),
+        };
+
+        self.bucket_and_rasterize::<S, F>(
+            simd,
+            &layer.nodes,
+            pixmap_bbox,
+            filter_ctx,
+            (&mut pixmap).into(),
+            params,
+            TargetInit::Clear(PremulColor::from_alpha_color(AlphaColor::TRANSPARENT)),
+            false,
+            encoded_paints,
+            image_resolver,
+        );
+
+        F::filter_layer(
+            &mut pixmap,
+            &filter_plan.filter,
+            filter_ctx.scratch(),
+            filter_plan.transform,
+        );
+
+        filter_ctx.set_layer(id as usize, pixmap);
+    }
 }
 
 impl Dispatcher for SingleThreadedDispatcher {
+    fn apply_backdrop_filter(
+        &mut self,
+        clip_path: &BezPath,
+        fill_rule: Fill,
+        clip_transform: Affine,
+        aliasing_threshold: Option<u8>,
+        filter_data: FilterData,
+    ) {
+        // Generated in the active layer's space: unlike `push_layer`, no root viewport is pushed,
+        // because the backdrop is a snapshot of content that is already recorded there.
+        let strip_start = self.strip_storage.strips.len();
+        let strip_storage = &mut self.strip_storage;
+        let clip = self
+            .viewport
+            .with_generator_and_clip(|strip_generator, existing_clip| {
+                strip_generator.generate_filled_path(
+                    clip_path,
+                    fill_rule,
+                    clip_transform,
+                    aliasing_threshold,
+                    strip_storage,
+                    existing_clip,
+                );
+
+                let strip_range = strip_start..strip_storage.strips.len();
+                LayerClip {
+                    bbox: strip_bbox(&strip_storage.strips[strip_range.clone()])
+                        .unwrap_or(RectU16::ZERO),
+                    strip_range,
+                    thread_idx: 0,
+                }
+            });
+
+        self.recorder.record_backdrop_filter(
+            LayerProps {
+                blend_mode: BlendMode::default(),
+                opacity: 1.0,
+                mask: None,
+                clip_path: Some(clip),
+            },
+            filter_data,
+        );
+    }
+
     fn has_layers(&self) -> bool {
         self.recorder.has_layers()
     }
