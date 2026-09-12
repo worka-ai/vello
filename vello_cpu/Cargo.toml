@@ -1,19 +1,22 @@
 [package]
-name = "vello_cpu"
-version = "0.2.0"
+name = "fission-vello-cpu"
+version = "0.2.0-fission.1"
 description = "A CPU-based renderer for Vello, optimized for SIMD and multithreaded execution."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/worka-ai/vello"
 
 [package.metadata.docs.rs]
 all-features = true
 # There are no platform specific docs.
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
+
+[lib]
+name = "vello_cpu"
 
 [dependencies]
 bytemuck = { workspace = true }

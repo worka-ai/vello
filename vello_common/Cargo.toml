@@ -1,20 +1,23 @@
 [package]
-name = "vello_common"
+name = "fission-vello-common"
 # When updating, also update the version in the workspace dependency in the root Cargo.toml
-version = "0.2.0"
+version = "0.2.0-fission.1"
 description = "Core data structures and utilities shared across the Vello rendering, including geometry processing and tiling logic."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/worka-ai/vello"
 
 [package.metadata.docs.rs]
 all-features = true
 # There are no platform specific docs.
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
+
+[lib]
+name = "vello_common"
 
 [dependencies]
 bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }

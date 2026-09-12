@@ -129,11 +129,11 @@ wasm-bindgen-futures = "0.4.64"
 wasm-bindgen-test = "0.3.64"
 web-sys = "0.3.91"
 
-vello_common = { version = "0.2.0", path = "vello_common", default-features = false }
-vello_cpu = { version = "0.2.0", path = "vello_cpu" }
-vello_gpu = { version = "0.2.0", path = "vello_gpu", default-features = false }
-vello_gpu_shaders = { version = "0.2.0", path = "vello_gpu_shaders" }
-glifo = { version = "0.3.0", path = "glifo", default-features = false }
+vello_common = { package = "fission-vello-common", version = "0.2.0-fission.1", path = "vello_common", default-features = false }
+vello_cpu = { package = "fission-vello-cpu", version = "0.2.0-fission.1", path = "vello_cpu" }
+vello_gpu = { package = "fission-vello-gpu", version = "0.2.0-fission.1", path = "vello_gpu", default-features = false }
+vello_gpu_shaders = { package = "fission-vello-gpu-shaders", version = "0.2.0-fission.1", path = "vello_gpu_shaders" }
+glifo = { package = "fission-glifo", version = "0.3.0-fission.1", path = "glifo", default-features = false }
 vello_example_scenes = { path = "vello_tests/vello_example_scenes" }
 vello_dev_macros = { path = "vello_tests/vello_dev_macros" }
 

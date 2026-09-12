@@ -1,13 +1,13 @@
 [package]
-name = "glifo"
-version = "0.3.0"
+name = "fission-glifo"
+version = "0.3.0-fission.1"
 description = "Glifo provides APIs for efficiently rendering text."
 keywords = ["text", "layout"]
 categories = ["gui", "graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/worka-ai/vello"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -20,6 +20,9 @@ png = ["std", "dep:png", "vello_common/png"]
 
 [lints]
 workspace = true
+
+[lib]
+name = "glifo"
 
 [dependencies]
 bytemuck = { workspace = true }

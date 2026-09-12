@@ -1,18 +1,21 @@
 [package]
-name = "vello_gpu"
-version = "0.2.0"
+name = "fission-vello-gpu"
+version = "0.2.0-fission.1"
 description = "A GPU renderer for Vello with CPU-side preprocessing."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/worka-ai/vello"
 
 [package.metadata.docs.rs]
 all-features = true
 default-target = "x86_64-unknown-linux-gnu"
 targets = ["wasm32-unknown-unknown"]
+
+[lib]
+name = "vello_gpu"
 
 [dependencies]
 bytemuck = { workspace = true, features = ["derive"] }

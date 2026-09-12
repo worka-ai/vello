@@ -1,20 +1,23 @@
 [package]
-name = "vello_gpu_shaders"
+name = "fission-vello-gpu-shaders"
 # When updating, also update the version in the workspace dependency in the root Cargo.toml
-version = "0.2.0"
+version = "0.2.0-fission.1"
 description = "Provide WESL shaders linked to WGSL and GLSL for the `vello_gpu` backends."
 categories = ["rendering", "graphics"]
 keywords = ["2d", "vector-graphics"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/worka-ai/vello"
 
 [package.metadata.docs.rs]
 all-features = true
 # There are no platform specific docs.
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
+
+[lib]
+name = "vello_gpu_shaders"
 
 [dependencies]
 naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "glsl-out"], optional = true }
