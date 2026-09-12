@@ -74,6 +74,7 @@ pub(crate) trait Renderer: Sized {
     fn push_opacity_layer(&mut self, opacity: f32);
     fn push_mask_layer(&mut self, mask: Mask);
     fn push_filter_layer(&mut self, filter: Filter);
+    fn apply_backdrop_filter(&mut self, clip_path: &BezPath, filter: Filter);
     fn pop_layer(&mut self);
     fn pop_clip_path(&mut self);
     fn set_stroke(&mut self, stroke: Stroke);
@@ -190,6 +191,10 @@ impl Renderer for CpuRenderer {
 
     fn push_filter_layer(&mut self, filter: Filter) {
         self.ctx.push_filter_layer(filter);
+    }
+
+    fn apply_backdrop_filter(&mut self, clip_path: &BezPath, filter: Filter) {
+        self.ctx.apply_backdrop_filter(clip_path, filter);
     }
 
     fn pop_layer(&mut self) {
@@ -514,6 +519,10 @@ impl Renderer for HybridRenderer {
 
     fn push_filter_layer(&mut self, filter: Filter) {
         self.scene.push_filter_layer(filter);
+    }
+
+    fn apply_backdrop_filter(&mut self, clip_path: &BezPath, filter: Filter) {
+        self.scene.apply_backdrop_filter(clip_path, filter);
     }
 
     fn pop_layer(&mut self) {
@@ -906,6 +915,10 @@ impl Renderer for HybridRenderer {
 
     fn push_filter_layer(&mut self, filter: Filter) {
         self.scene.push_filter_layer(filter);
+    }
+
+    fn apply_backdrop_filter(&mut self, clip_path: &BezPath, filter: Filter) {
+        self.scene.apply_backdrop_filter(clip_path, filter);
     }
 
     fn pop_layer(&mut self) {

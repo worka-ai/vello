@@ -2037,3 +2037,70 @@ fn filter_with_clip_and_inner_clip(ctx: &mut impl Renderer) {
     ctx.pop_layer();
     ctx.pop_layer();
 }
+
+fn backdrop_scene(ctx: &mut impl Renderer) {
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 50.0, 100.0));
+    ctx.set_paint(BLUE);
+    ctx.fill_rect(&Rect::new(50.0, 0.0, 100.0, 100.0));
+    ctx.set_paint(YELLOW);
+    ctx.fill_path(&circular_star(Point::new(50.0, 50.0), 5, 15.0, 35.0));
+}
+
+#[vello_test(skip_multithreaded, cpu_u8_tolerance = 2, hybrid_tolerance = 2)]
+fn filter_color_matrix_saturate(ctx: &mut impl Renderer) {
+    ctx.push_filter_layer(Filter::from_function(
+        vello_common::filter_effects::FilterFunction::Saturate { amount: 0.25 },
+    ));
+    backdrop_scene(ctx);
+    ctx.pop_layer();
+}
+
+#[vello_test(skip_multithreaded, cpu_u8_tolerance = 2, hybrid_tolerance = 2)]
+fn filter_chain_blur_then_grayscale(ctx: &mut impl Renderer) {
+    ctx.push_filter_layer(Filter::from_functions([
+        vello_common::filter_effects::FilterFunction::Blur { radius: 3.0 },
+        vello_common::filter_effects::FilterFunction::Grayscale { amount: 1.0 },
+    ]));
+    backdrop_scene(ctx);
+    ctx.pop_layer();
+}
+
+#[vello_test(skip_multithreaded, cpu_u8_tolerance = 2, hybrid_tolerance = 2)]
+fn filter_backdrop_blur(ctx: &mut impl Renderer) {
+    backdrop_scene(ctx);
+    ctx.apply_backdrop_filter(
+        &vello_common::kurbo::RoundedRect::new(20.0, 20.0, 80.0, 80.0, 12.0).to_path(0.1),
+        Filter::from_function(vello_common::filter_effects::FilterFunction::Blur { radius: 4.0 }),
+    );
+}
+
+// Oversaturating clamps channels, and the CPU's 8-bit matrix path and the GPU's float path
+// round differently at the clamp on anti-aliased edges: a handful of pixels differ by up to 4.
+#[vello_test(skip_multithreaded, cpu_u8_tolerance = 2, hybrid_tolerance = 4)]
+fn filter_backdrop_blur_and_saturate(ctx: &mut impl Renderer) {
+    backdrop_scene(ctx);
+    ctx.apply_backdrop_filter(
+        &vello_common::kurbo::RoundedRect::new(20.0, 20.0, 80.0, 80.0, 12.0).to_path(0.1),
+        Filter::from_functions([
+            vello_common::filter_effects::FilterFunction::Blur { radius: 4.0 },
+            vello_common::filter_effects::FilterFunction::Saturate { amount: 1.8 },
+        ]),
+    );
+}
+
+#[vello_test(skip_multithreaded, cpu_u8_tolerance = 2, hybrid_tolerance = 2)]
+fn filter_backdrop_inside_opacity_layer(ctx: &mut impl Renderer) {
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
+    ctx.push_opacity_layer(0.8);
+    ctx.set_paint(BLUE);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 50.0, 100.0));
+    ctx.apply_backdrop_filter(
+        &Rect::new(10.0, 10.0, 90.0, 90.0).to_path(0.1),
+        Filter::from_function(vello_common::filter_effects::FilterFunction::Grayscale {
+            amount: 1.0,
+        }),
+    );
+    ctx.pop_layer();
+}
