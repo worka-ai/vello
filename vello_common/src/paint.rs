@@ -184,7 +184,11 @@ impl ImageSource {
                     pixel.swap(0, 2);
                 }
             }
-            format => unimplemented!("Unsupported image format: {format:?}"),
+            format => {
+                // Draw nothing rather than abort the frame over one undecodable image.
+                log::error!("unsupported image format {format:?}; the image is not drawn");
+                rgba.fill(0);
+            }
         }
 
         let pixmap = Pixmap::from_parts(

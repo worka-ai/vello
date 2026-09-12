@@ -107,6 +107,24 @@ impl<'a> PaintResolver<'a> {
                 let gpu_offset = self.gpu_offsets[paint_id];
                 let encoded_paint = &self.encoded[paint_id];
 
+                if let EncodedPaint::Image(encoded_image) = encoded_paint {
+                    if matches!(encoded_image.source, ImageSource::Pixmap(_)) {
+                        // Pixmaps must be uploaded to the atlas first. Paint nothing rather
+                        // than abort the frame.
+                        log::error!(
+                            "pixmap image sources are not supported by vello_gpu; upload the \
+                             image and draw it by id"
+                        );
+                        return PackedPaint {
+                            payload: PaintPayload::Solid(0),
+                            paint: (COLOR_SOURCE_PAYLOAD << COLOR_SOURCE_SHIFT)
+                                | (PAINT_TYPE_SOLID << PAINT_TYPE_SHIFT),
+                            texture_source: None,
+                            opaque: false,
+                        };
+                    }
+                }
+
                 let (paint_type, texture_source) = match encoded_paint {
                     EncodedPaint::Image(encoded_image) => match &encoded_image.source {
                         ImageSource::ExternalTexture { id, .. } => {
@@ -119,7 +137,7 @@ impl<'a> PaintResolver<'a> {
                                 Some(TextureSourceId::Atlas(image_resource.atlas_id)),
                             )
                         }
-                        ImageSource::Pixmap(_) => unimplemented!("Unsupported image source"),
+                        ImageSource::Pixmap(_) => unreachable!("handled above"),
                     },
                     EncodedPaint::Gradient(gradient) => {
                         let paint_type = match &gradient.kind {

@@ -509,8 +509,10 @@ impl FilterTextureRegions {
 pub(crate) struct FilterOp {
     /// Original and temporary regions used by the filter passes.
     pub(crate) textures: FilterTextureRegions,
-    /// Texel offset of this filter's parameters in the filter data texture.
+    /// Texel offset of the first filter's parameters in the filter data texture.
     pub(crate) filter_data_offset: u32,
+    /// Number of chained filters whose parameter blocks follow contiguously.
+    pub(crate) filter_count: u32,
     /// Prepared filter parameters used to select and size passes.
     pub(crate) gpu_filter: GpuFilterData,
 }
@@ -573,6 +575,7 @@ mod tests {
                 region(TextureParity::Odd, 0),
             ),
             filter_data_offset,
+            filter_count: 1,
             gpu_filter: GpuFilterData::zeroed(),
         }
     }

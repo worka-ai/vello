@@ -459,6 +459,10 @@ impl MultiThreadedDispatcher {
 }
 
 impl Dispatcher for MultiThreadedDispatcher {
+    fn supports_filters(&self) -> bool {
+        false
+    }
+
     fn has_layers(&self) -> bool {
         self.layer_depth != 0
     }
@@ -554,9 +558,13 @@ impl Dispatcher for MultiThreadedDispatcher {
         // TODO: Implement filter support in multi-threaded dispatcher.
         // The single-threaded dispatcher has full filter support, but multi-threaded needs
         // additional infrastructure for cross-thread layer coordination.
-        if filter_data.is_some() {
-            unimplemented!("Filter effects are not yet supported in multi-threaded rendering");
-        }
+        // `RenderContext` drops filters before they reach here, because the layer's root
+        // shift has to be skipped along with the filter.
+        debug_assert!(
+            filter_data.is_none(),
+            "filters must be dropped before dispatch"
+        );
+        let _ = filter_data;
 
         let clip_path = clip_path.map(|c| {
             let start = self.allocation_group.path.len() as u32;

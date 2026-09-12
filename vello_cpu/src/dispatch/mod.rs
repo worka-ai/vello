@@ -16,6 +16,13 @@ use vello_common::paint::{ImageResolver, Paint};
 use vello_common::pixmap::PixmapMut;
 
 pub(crate) trait Dispatcher: Debug + Send {
+    /// Whether this dispatcher can render filter layers.
+    ///
+    /// Filters change the coordinate space layer content is recorded in, so a dispatcher that
+    /// cannot render them must have the filter dropped before the layer is pushed, not after.
+    fn supports_filters(&self) -> bool {
+        true
+    }
     fn has_layers(&self) -> bool;
     fn fill_path(
         &mut self,

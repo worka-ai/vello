@@ -452,9 +452,8 @@ impl RenderContext {
     /// it will be ignored. In addition to that, the mask will not be affected by the current
     /// transformation matrix in place.
     ///
-    /// # Panics
-    ///
-    /// Panics if `filter` is provided when this context uses multi-threaded rendering.
+    /// Filters are not supported with multi-threaded rendering; there, `filter` is logged at
+    /// error level and ignored.
     pub fn push_layer(
         &mut self,
         clip_path: Option<&BezPath>,
@@ -476,6 +475,16 @@ impl RenderContext {
         let layer_transform = self
             .root_transforms
             .effective_path_transform(self.transforms());
+        let filter = filter.filter(|_| {
+            let supported = self.dispatcher.supports_filters();
+            if !supported {
+                log::error!(
+                    "filter layers are not supported with multi-threaded rendering; \
+                     drawing the layer unfiltered"
+                );
+            }
+            supported
+        });
         let filter_data = filter.map(|filter| FilterData::new(filter, layer_transform));
 
         // The important part! Let's say we have an element placed in a way such that
@@ -532,13 +541,7 @@ impl RenderContext {
 
     /// Push a filter layer that affects all subsequent drawing operations.
     ///
-    /// WARNING: Note that filters are currently incomplete and experimental. In
-    /// particular, they will lead to a panic when used in combination with
-    /// multi-threaded rendering.
-    ///
-    /// # Panics
-    ///
-    /// Panics when this context uses multi-threaded rendering.
+    /// With multi-threaded rendering, filters are logged at error level and ignored.
     pub fn push_filter_layer(&mut self, filter: Filter) {
         self.push_layer(None, None, None, None, Some(filter));
     }

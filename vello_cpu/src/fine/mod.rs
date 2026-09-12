@@ -1072,12 +1072,17 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
             EncodedPaint::Image(image) => {
                 let pixmap = match &image.source {
                     ImageSource::Pixmap(pixmap) => pixmap.clone(),
-                    ImageSource::OpaqueId { id, .. } => resources
-                        .image_resolver
-                        .resolve(*id)
-                        .unwrap_or_else(|| panic!("Image {:?} not found in registry", id)),
+                    ImageSource::OpaqueId { id, .. } => {
+                        resources.image_resolver.resolve(*id).unwrap_or_else(|| {
+                            log::error!("image {id:?} is not registered; drawing nothing");
+                            alloc::sync::Arc::new(vello_common::pixmap::Pixmap::new(1, 1))
+                        })
+                    }
                     ImageSource::ExternalTexture { .. } => {
-                        unimplemented!("External textures are not supported by `vello_cpu`")
+                        log::error!(
+                            "external textures are not supported by vello_cpu; drawing nothing"
+                        );
+                        alloc::sync::Arc::new(vello_common::pixmap::Pixmap::new(1, 1))
                     }
                 };
                 let tint = image.tint.as_ref();

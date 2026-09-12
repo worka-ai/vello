@@ -4500,6 +4500,7 @@ dependencies = [
  "fearless_simd",
  "glifo",
  "hashbrown 0.17.1",
+ "log",
  "ordered-channel",
  "png",
  "rayon",

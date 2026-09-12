@@ -603,9 +603,8 @@ impl Scene {
 
     /// Push a new layer with the given properties.
     ///
-    /// # Panics
-    ///
-    /// Panics if `mask` is provided because mask layers are not yet supported.
+    /// Mask layers are not yet supported; a provided `mask` is logged at error level and the
+    /// layer is drawn unmasked.
     pub fn push_layer(
         &mut self,
         clip_path: Option<&BezPath>,
@@ -615,7 +614,7 @@ impl Scene {
         filter: Option<Filter>,
     ) {
         if mask.is_some() {
-            unimplemented!("mask layers are currently not supported");
+            log::error!("mask layers are not supported by vello_gpu; drawing the layer unmasked");
         }
 
         let blend_mode = blend_mode.unwrap_or_default();

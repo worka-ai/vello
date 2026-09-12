@@ -856,7 +856,11 @@ impl WebGlRenderer {
                             Self::encode_external_texture_paint(img, *source_region)
                         }
                         ImageSource::Pixmap(_) => {
-                            panic!("pixmap image sources are not supported by Vello GPU")
+                            // Already logged when the paint was packed; it is painted as
+                            // transparent, so its slot only needs to stay well-formed.
+                            self.encoded_paints[encoded_paint_idx] = GPU_PAINT_PLACEHOLDER;
+                            current_idx += GPU_LINEAR_GRADIENT_SIZE_TEXELS;
+                            continue;
                         }
                     };
                     self.encoded_paints[encoded_paint_idx] = gpu_image;

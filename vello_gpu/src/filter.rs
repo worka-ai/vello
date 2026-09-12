@@ -8,6 +8,7 @@ use crate::schedule::round::FilterOp;
 use crate::util::pack_u16_pair;
 use alloc::vec::Vec;
 use bytemuck::{Pod, Zeroable};
+use vello_common::filter::color_matrix::ColorMatrix;
 use vello_common::filter::drop_shadow::DropShadow;
 use vello_common::filter::flood::Flood;
 use vello_common::filter::gaussian_blur::{DecimationSizer, GaussianBlur, MAX_KERNEL_SIZE};
@@ -31,7 +32,7 @@ pub(crate) const FILTER_ATLAS_PADDING: u16 = MAX_KERNEL_SIZE as u16 / 2;
 
 // Since we store in RGBA32 texture.
 const BYTES_PER_TEXEL: usize = 16;
-const FILTER_SIZE_BYTES: usize = 48;
+const FILTER_SIZE_BYTES: usize = 96;
 const FILTER_SIZE_U32: usize = FILTER_SIZE_BYTES / 4;
 const COMPOSITE_ORIGINAL_SHIFT: u32 = 13;
 const COMPOSITE_ORIGINAL_MASK: u32 = 1 << COMPOSITE_ORIGINAL_SHIFT;
@@ -56,12 +57,17 @@ const _: () = assert!(
     size_of::<GpuGaussianBlur>() == FILTER_SIZE_BYTES,
     "memory size of filters need to match"
 );
+const _: () = assert!(
+    size_of::<GpuColorMatrix>() == FILTER_SIZE_BYTES,
+    "memory size of filters need to match"
+);
 
 pub(crate) mod filter_type {
     pub(crate) const OFFSET: u32 = 0;
     pub(crate) const FLOOD: u32 = 1;
     pub(crate) const GAUSSIAN_BLUR: u32 = 2;
     pub(crate) const DROP_SHADOW: u32 = 3;
+    pub(crate) const COLOR_MATRIX: u32 = 4;
 }
 
 pub(crate) mod edge_mode {
@@ -81,6 +87,7 @@ pub(crate) mod pass_kind {
     pub(crate) const UPSCALE: u32 = 6;
     pub(crate) const COMPOSITE_DROP_SHADOW: u32 = 7;
     pub(crate) const COLORIZE: u32 = 8;
+    pub(crate) const COLOR_MATRIX: u32 = 9;
 }
 
 pub(crate) fn edge_mode_to_gpu(mode: EdgeMode) -> u32 {
@@ -197,7 +204,7 @@ pub(crate) struct GpuOffset {
     pub header: u32,
     pub dx: f32,
     pub dy: f32,
-    pub _padding: [u32; 9],
+    pub _padding: [u32; 21],
 }
 
 impl From<&Offset> for GpuOffset {
@@ -206,7 +213,7 @@ impl From<&Offset> for GpuOffset {
             header: pack_header(filter_type::OFFSET),
             dx: offset.dx,
             dy: offset.dy,
-            _padding: [0; 9],
+            _padding: [0; 21],
         }
     }
 }
@@ -216,7 +223,7 @@ impl From<&Offset> for GpuOffset {
 pub(crate) struct GpuFlood {
     pub header: u32,
     pub color: u32,
-    pub _padding: [u32; 10],
+    pub _padding: [u32; 22],
 }
 
 impl From<&Flood> for GpuFlood {
@@ -224,7 +231,7 @@ impl From<&Flood> for GpuFlood {
         Self {
             header: pack_header(filter_type::FLOOD),
             color: flood.color.premultiply().to_rgba8().to_u32(),
-            _padding: [0; 10],
+            _padding: [0; 22],
         }
     }
 }
@@ -236,8 +243,8 @@ pub(crate) struct GpuGaussianBlur {
     pub center_weight: f32,
     pub linear_weights: [f32; MAX_TAPS_PER_SIDE],
     pub linear_offsets: [f32; MAX_TAPS_PER_SIDE],
-    // Needed since drop shadow has a bigger footprint.
-    pub _padding: [u32; 4],
+    // Filter blocks share one size, set by the largest (the colour matrix).
+    pub _padding: [u32; 16],
 }
 
 impl From<&GaussianBlur> for GpuGaussianBlur {
@@ -261,7 +268,7 @@ impl From<&GaussianBlur> for GpuGaussianBlur {
             center_weight: lk.center_weight,
             linear_weights: lk.weights,
             linear_offsets: lk.offsets,
-            _padding: [0; 4],
+            _padding: [0; 16],
         }
     }
 }
@@ -276,7 +283,7 @@ pub(crate) struct GpuDropShadow {
     pub dx: f32,
     pub dy: f32,
     pub color: u32,
-    pub _padding: [u32; 1],
+    pub _padding: [u32; 13],
 }
 
 impl From<&DropShadow> for GpuDropShadow {
@@ -305,7 +312,29 @@ impl From<&DropShadow> for GpuDropShadow {
             dx: shadow.dx,
             dy: shadow.dy,
             color: shadow.color.premultiply().to_rgba8().to_u32(),
-            _padding: [0; 1],
+            _padding: [0; 13],
+        }
+    }
+}
+
+/// A colour matrix parameter block: a header followed by twenty row-major matrix values.
+///
+/// Keep the layout in sync with `filters/color_matrix.wesl`, which reads matrix value `i` from
+/// u32 slot `i + 1`.
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
+pub(crate) struct GpuColorMatrix {
+    pub header: u32,
+    pub matrix: [f32; 20],
+    pub _padding: [u32; 3],
+}
+
+impl From<&ColorMatrix> for GpuColorMatrix {
+    fn from(matrix: &ColorMatrix) -> Self {
+        Self {
+            header: pack_header(filter_type::COLOR_MATRIX),
+            matrix: matrix.matrix,
+            _padding: [0; 3],
         }
     }
 }
@@ -349,6 +378,7 @@ impl CastToFilterData for GpuOffset {}
 impl CastToFilterData for GpuFlood {}
 impl CastToFilterData for GpuGaussianBlur {}
 impl CastToFilterData for GpuDropShadow {}
+impl CastToFilterData for GpuColorMatrix {}
 
 impl<T: CastToFilterData> From<T> for GpuFilterData {
     fn from(filter: T) -> Self {
@@ -363,6 +393,7 @@ impl From<&PreparedFilter> for GpuFilterData {
             PreparedFilter::Flood(f) => GpuFlood::from(f).into(),
             PreparedFilter::GaussianBlur(f) => GpuGaussianBlur::from(f).into(),
             PreparedFilter::DropShadow(f) => GpuDropShadow::from(f).into(),
+            PreparedFilter::ColorMatrix(f) => GpuColorMatrix::from(f).into(),
         }
     }
 }
@@ -402,10 +433,12 @@ pub(crate) struct FilterContext {
 /// Offset and encoded parameters for one filter recorded in [`FilterContext`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PreparedGpuFilter {
-    /// Texel offset of the parameter block in the filter data texture.
+    /// Texel offset of the first parameter block in the filter data texture.
     pub(crate) data_offset: u32,
-    /// Encoded filter parameters.
+    /// Encoded parameters of the first filter in the chain.
     pub(crate) data: GpuFilterData,
+    /// Number of filters in the chain. Their parameter blocks are contiguous.
+    pub(crate) count: u32,
 }
 
 /// The concrete filter-execution plan for a batch of scheduled filters, split into two phases:
@@ -424,36 +457,55 @@ impl FilterPassPlan {
     pub(crate) fn init(
         &mut self,
         filters: impl IntoIterator<Item = FilterOp>,
+        filter_data: &[GpuFilterData],
         texture_size: SizeU16,
     ) {
         self.clear();
 
         for filter in filters {
             let mut builder = FilterPassBuilder::new(filter, texture_size, self);
+            // The scratch copy preserves the layer *before* any filter runs, so only the first
+            // filter of a chain can composite against it.
             if filter.gpu_filter.needs_copy_pass() {
                 builder.push_copy_to_scratch_pass();
             }
 
-            match filter.gpu_filter.filter_type() {
-                filter_type::OFFSET => {
-                    builder.emit(pass_kind::OFFSET);
+            for index in 0..filter.filter_count {
+                let data_offset = filter.filter_data_offset + index * GpuFilterData::SIZE_TEXELS;
+                let Some(data) = filter_data
+                    .get((data_offset / GpuFilterData::SIZE_TEXELS) as usize)
+                    .copied()
+                else {
+                    log::error!("filter chain refers to missing parameter block {data_offset}");
+                    break;
+                };
+                if index > 0 && data.needs_copy_pass() {
+                    log::error!(
+                        "a drop shadow that composites its source must be the first filter in a \
+                         chain; skipping it"
+                    );
+                    continue;
                 }
-                filter_type::FLOOD => {
-                    builder.emit(pass_kind::FLOOD);
-                }
-                filter_type::GAUSSIAN_BLUR => {
-                    builder.emit_blur_sequence(filter.gpu_filter.n_decimations());
-                }
-                filter_type::DROP_SHADOW => {
-                    builder.emit(pass_kind::OFFSET);
-                    builder.emit_blur_sequence(filter.gpu_filter.n_decimations());
-                    if filter.gpu_filter.composite_original() {
-                        builder.emit(pass_kind::COMPOSITE_DROP_SHADOW);
-                    } else {
-                        builder.emit(pass_kind::COLORIZE);
+                builder.data_offset = data_offset;
+
+                match data.filter_type() {
+                    filter_type::OFFSET => builder.emit(pass_kind::OFFSET),
+                    filter_type::FLOOD => builder.emit(pass_kind::FLOOD),
+                    filter_type::GAUSSIAN_BLUR => {
+                        builder.emit_blur_sequence(data.n_decimations());
                     }
+                    filter_type::DROP_SHADOW => {
+                        builder.emit(pass_kind::OFFSET);
+                        builder.emit_blur_sequence(data.n_decimations());
+                        if data.composite_original() {
+                            builder.emit(pass_kind::COMPOSITE_DROP_SHADOW);
+                        } else {
+                            builder.emit(pass_kind::COLORIZE);
+                        }
+                    }
+                    filter_type::COLOR_MATRIX => builder.emit(pass_kind::COLOR_MATRIX),
+                    other => log::error!("unknown filter type {other} was encoded; skipping it"),
                 }
-                _ => unreachable!("unsupported filter type was encoded"),
             }
 
             builder.ensure_result_in_original();
@@ -497,6 +549,8 @@ struct FilterPassBuilder<'a> {
     current_is_original: bool,
     /// Index of the next pass in this filter's sequence.
     step: usize,
+    /// Parameter block of the chain element currently emitting passes.
+    data_offset: u32,
 }
 
 impl<'a> FilterPassBuilder<'a> {
@@ -513,6 +567,7 @@ impl<'a> FilterPassBuilder<'a> {
             sizer,
             current_is_original: true,
             step: 0,
+            data_offset: op.filter_data_offset,
         }
     }
 
@@ -557,7 +612,7 @@ impl<'a> FilterPassBuilder<'a> {
             dest_origin: rect_origin(dest_rect),
             dest_size: size(dest_size),
             dest_texture_size: size(dest_texture_size),
-            filter_data_offset: self.op.filter_data_offset,
+            filter_data_offset: self.data_offset,
             original_origin: rect_origin(original.rect),
             original_size: pack_u16_pair(original.rect.width(), original.rect.height()),
             filter_pass_kind: kind,
@@ -622,13 +677,28 @@ impl FilterContext {
         self.filters.clear();
     }
 
-    pub(crate) fn push(&mut self, filter_data: &FilterData) -> PreparedGpuFilter {
+    /// Encode every filter of a chain and return where they start.
+    ///
+    /// Returns `None` when no filter in the chain could be prepared, in which case the layer is
+    /// composited unfiltered.
+    pub(crate) fn push(&mut self, filter_data: &FilterData) -> Option<PreparedGpuFilter> {
         let data_offset = self.total_texels();
-        let prepared = PreparedFilter::new(&filter_data.filter, &filter_data.transform);
-        let data = GpuFilterData::from(&prepared);
-        self.filters.push(data);
+        let chain = PreparedFilter::chain(&filter_data.filter, &filter_data.transform);
+        let first = GpuFilterData::from(chain.first()?);
+        for prepared in &chain {
+            self.filters.push(GpuFilterData::from(prepared));
+        }
 
-        PreparedGpuFilter { data_offset, data }
+        Some(PreparedGpuFilter {
+            data_offset,
+            data: first,
+            count: chain.len() as u32,
+        })
+    }
+
+    /// The encoded parameter blocks of every filter pushed so far.
+    pub(crate) fn filters(&self) -> &[GpuFilterData] {
+        &self.filters
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -691,15 +761,28 @@ mod tests {
         }
     }
 
-    fn filter_op(gpu_filter: GpuFilterData, filter_data_offset: u32) -> FilterOp {
+    fn off(index: u32) -> u32 {
+        index * GpuFilterData::SIZE_TEXELS
+    }
+
+    fn filter_op(gpu_filter: GpuFilterData, index: u32) -> FilterOp {
         FilterOp {
             textures: FilterTextureRegions::new(
                 region(TextureParity::Odd),
                 region(TextureParity::Even),
             ),
-            filter_data_offset,
+            filter_data_offset: off(index),
+            filter_count: 1,
             gpu_filter,
         }
+    }
+
+    fn data_for(ops: &[FilterOp]) -> Vec<GpuFilterData> {
+        ops.iter().map(|op| op.gpu_filter).collect()
+    }
+
+    fn init(plan: &mut FilterPassPlan, ops: &[FilterOp]) {
+        plan.init(ops.iter().copied(), &data_for(ops), SizeU16::new(64));
     }
 
     fn gpu_offset() -> GpuFilterData {
@@ -748,34 +831,34 @@ mod tests {
     #[test]
     fn pass_batching() {
         let mut plan = FilterPassPlan::default();
-        plan.init(
-            [
+        init(
+            &mut plan,
+            &[
                 filter_op(gpu_offset(), 0),
                 filter_op(gpu_blur(8.0), 1),
                 filter_op(gpu_shadow(), 2),
             ],
-            SizeU16::new(64),
         );
 
         assert_eq!(
             step_layout(&plan),
             alloc::vec![
                 alloc::vec![
-                    (0, pass_kind::OFFSET),
-                    (1, pass_kind::DOWNSCALE),
-                    (2, pass_kind::OFFSET),
+                    (off(0), pass_kind::OFFSET),
+                    (off(1), pass_kind::DOWNSCALE),
+                    (off(2), pass_kind::OFFSET),
                 ],
                 alloc::vec![
-                    (0, pass_kind::COPY),
-                    (1, pass_kind::DOWNSCALE),
-                    (2, pass_kind::DOWNSCALE),
+                    (off(0), pass_kind::COPY),
+                    (off(1), pass_kind::DOWNSCALE),
+                    (off(2), pass_kind::DOWNSCALE),
                 ],
-                alloc::vec![(1, pass_kind::BLUR_H), (2, pass_kind::DOWNSCALE)],
-                alloc::vec![(1, pass_kind::BLUR_V), (2, pass_kind::BLUR_H)],
-                alloc::vec![(1, pass_kind::UPSCALE), (2, pass_kind::BLUR_V)],
-                alloc::vec![(1, pass_kind::UPSCALE), (2, pass_kind::UPSCALE)],
-                alloc::vec![(2, pass_kind::UPSCALE)],
-                alloc::vec![(2, pass_kind::COMPOSITE_DROP_SHADOW)],
+                alloc::vec![(off(1), pass_kind::BLUR_H), (off(2), pass_kind::DOWNSCALE)],
+                alloc::vec![(off(1), pass_kind::BLUR_V), (off(2), pass_kind::BLUR_H)],
+                alloc::vec![(off(1), pass_kind::UPSCALE), (off(2), pass_kind::BLUR_V)],
+                alloc::vec![(off(1), pass_kind::UPSCALE), (off(2), pass_kind::UPSCALE)],
+                alloc::vec![(off(2), pass_kind::UPSCALE)],
+                alloc::vec![(off(2), pass_kind::COMPOSITE_DROP_SHADOW)],
             ]
         );
     }
@@ -783,21 +866,21 @@ mod tests {
     #[test]
     fn plan_reinit() {
         let mut plan = FilterPassPlan::default();
-        plan.init(
-            [filter_op(gpu_shadow(), 0), filter_op(gpu_blur(8.0), 1)],
-            SizeU16::new(64),
+        init(
+            &mut plan,
+            &[filter_op(gpu_shadow(), 0), filter_op(gpu_blur(8.0), 1)],
         );
         assert!(plan.copy_pass().is_some());
         assert!(plan.steps().count() > 2);
 
-        plan.init([filter_op(gpu_offset(), 0)], SizeU16::new(64));
+        init(&mut plan, &[filter_op(gpu_offset(), 0)]);
 
         assert!(plan.copy_pass().is_none());
         assert_eq!(
             step_layout(&plan),
             [
-                alloc::vec![(0, pass_kind::OFFSET)],
-                alloc::vec![(0, pass_kind::COPY)],
+                alloc::vec![(off(0), pass_kind::OFFSET)],
+                alloc::vec![(off(0), pass_kind::COPY)],
             ]
         );
     }
@@ -805,18 +888,61 @@ mod tests {
     #[test]
     fn single_pass_filters_finish_in_original() {
         let mut plan = FilterPassPlan::default();
-        plan.init(
-            [filter_op(gpu_offset(), 0), filter_op(gpu_flood(), 1)],
-            SizeU16::new(64),
+        init(
+            &mut plan,
+            &[filter_op(gpu_offset(), 0), filter_op(gpu_flood(), 1)],
         );
 
         assert!(plan.copy_pass().is_none());
         assert_eq!(
             step_layout(&plan),
             [
-                alloc::vec![(0, pass_kind::OFFSET), (1, pass_kind::FLOOD)],
-                alloc::vec![(0, pass_kind::COPY), (1, pass_kind::COPY)],
+                alloc::vec![(off(0), pass_kind::OFFSET), (off(1), pass_kind::FLOOD)],
+                alloc::vec![(off(0), pass_kind::COPY), (off(1), pass_kind::COPY)],
             ]
+        );
+    }
+
+    #[test]
+    fn chained_filters_continue_on_the_previous_result() {
+        let blur = gpu_blur(0.0);
+        let matrix: GpuFilterData = GpuColorMatrix::from(&ColorMatrix::new([0.0; 20])).into();
+        let op = FilterOp {
+            textures: FilterTextureRegions::new(
+                region(TextureParity::Odd),
+                region(TextureParity::Even),
+            ),
+            filter_data_offset: 0,
+            filter_count: 2,
+            gpu_filter: blur,
+        };
+        let mut plan = FilterPassPlan::default();
+        plan.init([op], &[blur, matrix], SizeU16::new(64));
+
+        let layout = step_layout(&plan);
+        let kinds: Vec<u32> = layout.iter().flatten().map(|(_, kind)| *kind).collect();
+        let matrix_step = kinds
+            .iter()
+            .position(|kind| *kind == pass_kind::COLOR_MATRIX)
+            .expect("colour matrix pass");
+        assert!(
+            kinds[..matrix_step].contains(&pass_kind::BLUR_H),
+            "the colour matrix must run after the blur, on its result"
+        );
+        assert!(
+            layout
+                .iter()
+                .flatten()
+                .any(|(offset, kind)| *kind == pass_kind::COLOR_MATRIX && *offset == off(1)),
+            "the colour matrix must read its own parameter block"
+        );
+    }
+
+    #[test]
+    fn test_color_matrix_round_trip() {
+        check_round_trip(
+            GpuColorMatrix::from(&ColorMatrix::new([0.5; 20])),
+            filter_type::COLOR_MATRIX,
         );
     }
 

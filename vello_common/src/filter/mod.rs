@@ -7,6 +7,7 @@
 //! represent a special representation of each filter to be used as the basis for rendering in
 //! `vello_gpu` and `vello_cpu`.
 
+use crate::filter::color_matrix::ColorMatrix;
 use crate::filter::drop_shadow::{DropShadow, transform_shadow_params};
 use crate::filter::flood::Flood;
 use crate::filter::gaussian_blur::{GaussianBlur, transform_blur_params};
@@ -17,7 +18,9 @@ use crate::kurbo::{Affine, Rect, Vec2};
 use crate::math::snap_up;
 use crate::tile::Tile;
 use crate::util::RectExt;
+use smallvec::SmallVec;
 
+pub mod color_matrix;
 pub mod drop_shadow;
 pub mod flood;
 pub mod gaussian_blur;
@@ -34,28 +37,34 @@ pub enum PreparedFilter {
     Offset(Offset),
     /// A drop shadow filter.
     DropShadow(DropShadow),
+    /// A colour matrix filter.
+    ColorMatrix(ColorMatrix),
 }
 
 impl PreparedFilter {
-    /// Build a new prepared filter for the given transform.
-    pub fn new(filter: &Filter, transform: &Affine) -> Self {
-        // Multi-primitive filter graphs are not yet implemented.
-        if filter.graph.primitives.len() != 1 {
-            unimplemented!("Multi-primitive filter graphs are not yet supported");
-        }
+    /// Prepare every primitive of a filter, in the order they apply.
+    ///
+    /// Each primitive consumes the result of the one before it. Primitives that are not yet
+    /// implemented are logged at error level and skipped, so an unsupported effect leaves the
+    /// content unfiltered rather than aborting the frame.
+    pub fn chain(filter: &Filter, transform: &Affine) -> SmallVec<[Self; 2]> {
+        filter
+            .graph
+            .primitives
+            .iter()
+            .filter_map(|primitive| Self::prepare(primitive, transform))
+            .collect()
+    }
 
-        match &filter.graph.primitives[0] {
-            FilterPrimitive::Flood { color } => {
-                let flood = Flood::new(*color);
-                Self::Flood(flood)
-            }
+    fn prepare(primitive: &FilterPrimitive, transform: &Affine) -> Option<Self> {
+        Some(match primitive {
+            FilterPrimitive::Flood { color } => Self::Flood(Flood::new(*color)),
             FilterPrimitive::GaussianBlur {
                 std_deviation,
                 edge_mode,
             } => {
                 let scaled_std_dev = transform_blur_params(*std_deviation, transform);
-                let blur = GaussianBlur::new(scaled_std_dev, *edge_mode);
-                Self::GaussianBlur(blur)
+                Self::GaussianBlur(GaussianBlur::new(scaled_std_dev, *edge_mode))
             }
             FilterPrimitive::DropShadow {
                 dx,
@@ -66,10 +75,13 @@ impl PreparedFilter {
             } => {
                 let (scaled_dx, scaled_dy, scaled_std_dev) =
                     transform_shadow_params(*dx, *dy, *std_deviation, transform);
-                let drop_shadow =
-                    DropShadow::new(scaled_dx, scaled_dy, scaled_std_dev, *edge_mode, *color);
-
-                Self::DropShadow(drop_shadow)
+                Self::DropShadow(DropShadow::new(
+                    scaled_dx,
+                    scaled_dy,
+                    scaled_std_dev,
+                    *edge_mode,
+                    *color,
+                ))
             }
             FilterPrimitive::DropShadowOnly {
                 dx,
@@ -80,28 +92,25 @@ impl PreparedFilter {
             } => {
                 let (scaled_dx, scaled_dy, scaled_std_dev) =
                     transform_shadow_params(*dx, *dy, *std_deviation, transform);
-                let drop_shadow = DropShadow::new_shadow_only(
+                Self::DropShadow(DropShadow::new_shadow_only(
                     scaled_dx,
                     scaled_dy,
                     scaled_std_dev,
                     *edge_mode,
                     *color,
-                );
-
-                Self::DropShadow(drop_shadow)
+                ))
             }
             FilterPrimitive::Offset { dx, dy } => {
                 let (scaled_dx, scaled_dy) = transform_offset_params(*dx, *dy, transform);
-                let offset = Offset::new(scaled_dx, scaled_dy);
-
-                Self::Offset(offset)
+                Self::Offset(Offset::new(scaled_dx, scaled_dy))
             }
-            _ => {
-                // Other primitives like Blend, ColorMatrix, ComponentTransfer, etc.
-                // are not yet implemented
-                unimplemented!("Other filter primitives not yet implemented");
+            // Colour matrices act per pixel, so the transform does not affect them.
+            FilterPrimitive::ColorMatrix { matrix } => Self::ColorMatrix(ColorMatrix::new(*matrix)),
+            other => {
+                log::error!("filter primitive {other:?} is not implemented; skipping it");
+                return None;
             }
-        }
+        })
     }
 }
 

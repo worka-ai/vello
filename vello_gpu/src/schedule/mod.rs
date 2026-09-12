@@ -462,6 +462,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
                 FilterOp {
                     textures,
                     filter_data_offset: filter.data_offset,
+                    filter_count: filter.count,
                     gpu_filter: filter.data,
                 },
             );
@@ -804,7 +805,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
         if layer.target.is_none() {
             let filter = match layer.kind {
                 RecordedLayerKind::Filter { filter_data, .. } => {
-                    Some(self.storage.filter_context.push(filter_data))
+                    self.storage.filter_context.push(filter_data)
                 }
                 RecordedLayerKind::Regular => None,
             };

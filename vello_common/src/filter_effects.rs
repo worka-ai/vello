@@ -75,16 +75,32 @@ impl Filter {
     /// Converts a high-level CSS-style filter function into a filter graph.
     /// Use this for simple effects like blur, brightness, etc.
     pub fn from_function(function: FilterFunction) -> Self {
-        // Convert function to primitive
-        let primitive = match function {
-            FilterFunction::Blur { radius } => FilterPrimitive::GaussianBlur {
-                std_deviation: radius,
-                edge_mode: EdgeMode::default(),
-            },
-            _ => unimplemented!("Filter function {:?} not supported", function),
-        };
+        Self::from_primitive(function.to_primitive())
+    }
 
-        Self::from_primitive(primitive)
+    /// Create a filter that applies several filter functions in order.
+    ///
+    /// This is CSS's `filter: blur(8px) saturate(1.8)`: each function runs on the result of
+    /// the one before it.
+    pub fn from_functions(functions: impl IntoIterator<Item = FilterFunction>) -> Self {
+        Self::from_primitives(functions.into_iter().map(FilterFunction::to_primitive))
+    }
+
+    /// Create a filter that applies several primitives in order, each consuming the previous
+    /// result.
+    pub fn from_primitives(primitives: impl IntoIterator<Item = FilterPrimitive>) -> Self {
+        let mut graph = FilterGraph::new();
+        let mut last = None;
+        for primitive in primitives {
+            last = Some(graph.add(primitive, None));
+        }
+        if let Some(output) = last {
+            graph.set_output(output);
+        }
+
+        Self {
+            graph: Arc::new(graph),
+        }
     }
 
     /// Create a filter system from a filter primitive.
@@ -182,12 +198,20 @@ impl FilterGraph {
     ///
     /// Returns a `FilterId` that can be referenced by other primitives.
     /// Automatically updates the accumulated source and filter expansion requirements.
+    ///
+    /// Primitives are currently applied in insertion order, each consuming the result of the
+    /// one before it; explicit `inputs` are not yet honoured. Because the primitives run in
+    /// sequence, their expansions compose additively: a blur following an offset must reach
+    /// as far as the offset moved the content *plus* its own radius, which a union of the two
+    /// rectangles would under-allocate.
     pub fn add(&mut self, primitive: FilterPrimitive, _inputs: Option<FilterInputs>) -> FilterId {
         let id = FilterId(self.next_id);
         self.next_id += 1;
 
-        self.filter_expansion = self.filter_expansion.union(primitive.filter_expansion());
-        self.source_expansion = self.source_expansion.union(primitive.source_expansion());
+        self.filter_expansion =
+            compose_expansion(self.filter_expansion, primitive.filter_expansion());
+        self.source_expansion =
+            compose_expansion(self.source_expansion, primitive.source_expansion());
 
         self.primitives.push(primitive);
 
@@ -647,6 +671,184 @@ impl FilterPrimitive {
             _ => self.filter_expansion(),
         }
     }
+}
+
+/// Compose the expansion of two filters applied in sequence.
+///
+/// Both rectangles contain the origin, so adding their edges is the Minkowski sum of the two
+/// expansion regions.
+fn compose_expansion(first: Rect, second: Rect) -> Rect {
+    Rect::new(
+        first.x0 + second.x0,
+        first.y0 + second.y0,
+        first.x1 + second.x1,
+        first.y1 + second.y1,
+    )
+}
+
+impl FilterFunction {
+    /// Lower this CSS filter function to the primitive that implements it.
+    ///
+    /// Every function other than `blur` is a colour matrix, using the matrices the Filter
+    /// Effects specification defines for it. Amounts are interpreted exactly as in CSS,
+    /// including values outside `[0, 1]` for the functions that allow them.
+    pub fn to_primitive(self) -> FilterPrimitive {
+        match self {
+            Self::Blur { radius } => FilterPrimitive::GaussianBlur {
+                std_deviation: radius,
+                edge_mode: EdgeMode::default(),
+            },
+            Self::Brightness { amount } => FilterPrimitive::ColorMatrix {
+                matrix: linear_rgb_matrix(amount, 0.0),
+            },
+            Self::Contrast { amount } => FilterPrimitive::ColorMatrix {
+                matrix: linear_rgb_matrix(amount, 0.5 - 0.5 * amount),
+            },
+            Self::Invert { amount } => FilterPrimitive::ColorMatrix {
+                matrix: linear_rgb_matrix(1.0 - 2.0 * amount, amount),
+            },
+            Self::Opacity { amount } => {
+                let mut matrix = IDENTITY_COLOR_MATRIX;
+                matrix[18] = amount;
+                FilterPrimitive::ColorMatrix { matrix }
+            }
+            Self::Saturate { amount } => FilterPrimitive::ColorMatrix {
+                matrix: saturate_matrix(amount),
+            },
+            Self::Grayscale { amount } => {
+                let a = 1.0 - amount.clamp(0.0, 1.0);
+                FilterPrimitive::ColorMatrix {
+                    matrix: [
+                        0.2126 + 0.7874 * a,
+                        0.7152 - 0.7152 * a,
+                        0.0722 - 0.0722 * a,
+                        0.0,
+                        0.0,
+                        0.2126 - 0.2126 * a,
+                        0.7152 + 0.2848 * a,
+                        0.0722 - 0.0722 * a,
+                        0.0,
+                        0.0,
+                        0.2126 - 0.2126 * a,
+                        0.7152 - 0.7152 * a,
+                        0.0722 + 0.9278 * a,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                    ],
+                }
+            }
+            Self::Sepia { amount } => {
+                let a = 1.0 - amount.clamp(0.0, 1.0);
+                FilterPrimitive::ColorMatrix {
+                    matrix: [
+                        0.393 + 0.607 * a,
+                        0.769 - 0.769 * a,
+                        0.189 - 0.189 * a,
+                        0.0,
+                        0.0,
+                        0.349 - 0.349 * a,
+                        0.686 + 0.314 * a,
+                        0.168 - 0.168 * a,
+                        0.0,
+                        0.0,
+                        0.272 - 0.272 * a,
+                        0.534 - 0.534 * a,
+                        0.131 + 0.869 * a,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                    ],
+                }
+            }
+            Self::HueRotate { angle } => {
+                let radians = angle.to_radians();
+                #[cfg(feature = "std")]
+                let (sin, cos) = (radians.sin(), radians.cos());
+                #[cfg(not(feature = "std"))]
+                let (sin, cos) = (libm::sinf(radians), libm::cosf(radians));
+                FilterPrimitive::ColorMatrix {
+                    matrix: [
+                        0.213 + cos * 0.787 - sin * 0.213,
+                        0.715 - cos * 0.715 - sin * 0.715,
+                        0.072 - cos * 0.072 + sin * 0.928,
+                        0.0,
+                        0.0,
+                        0.213 - cos * 0.213 + sin * 0.143,
+                        0.715 + cos * 0.285 + sin * 0.140,
+                        0.072 - cos * 0.072 - sin * 0.283,
+                        0.0,
+                        0.0,
+                        0.213 - cos * 0.213 - sin * 0.787,
+                        0.715 - cos * 0.715 + sin * 0.715,
+                        0.072 + cos * 0.928 + sin * 0.072,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                    ],
+                }
+            }
+        }
+    }
+}
+
+/// The 4x5 identity colour matrix.
+const IDENTITY_COLOR_MATRIX: [f32; 20] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, //
+    0.0, 1.0, 0.0, 0.0, 0.0, //
+    0.0, 0.0, 1.0, 0.0, 0.0, //
+    0.0, 0.0, 0.0, 1.0, 0.0,
+];
+
+/// A matrix scaling the colour channels by `slope` and adding `intercept`, leaving alpha alone.
+///
+/// This is `feComponentTransfer type="linear"` on R, G and B, which is how the specification
+/// defines `brightness`, `contrast` and `invert`.
+fn linear_rgb_matrix(slope: f32, intercept: f32) -> [f32; 20] {
+    [
+        slope, 0.0, 0.0, 0.0, intercept, //
+        0.0, slope, 0.0, 0.0, intercept, //
+        0.0, 0.0, slope, 0.0, intercept, //
+        0.0, 0.0, 0.0, 1.0, 0.0,
+    ]
+}
+
+/// `feColorMatrix type="saturate"`.
+fn saturate_matrix(s: f32) -> [f32; 20] {
+    [
+        0.213 + 0.787 * s,
+        0.715 - 0.715 * s,
+        0.072 - 0.072 * s,
+        0.0,
+        0.0,
+        0.213 - 0.213 * s,
+        0.715 + 0.285 * s,
+        0.072 - 0.072 * s,
+        0.0,
+        0.0,
+        0.213 - 0.213 * s,
+        0.715 - 0.715 * s,
+        0.072 + 0.928 * s,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+    ]
 }
 
 fn blur_radius(std_deviation: f32) -> f64 {

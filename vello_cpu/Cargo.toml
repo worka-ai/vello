@@ -19,6 +19,7 @@ targets = []
 bytemuck = { workspace = true }
 glifo = { workspace = true, default-features = false, optional = true }
 vello_common = { workspace = true }
+log = { workspace = true }
 hashbrown = { workspace = true }
 png = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
