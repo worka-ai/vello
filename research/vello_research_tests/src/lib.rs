@@ -115,7 +115,6 @@ pub async fn get_scene_image(
         device,
         RendererOptions {
             use_cpu: params.use_cpu,
-            use_indirect_dispatch: true,
             num_init_threads: NonZeroUsize::new(1),
             antialiasing_support: std::iter::once(params.anti_aliasing).collect(),
             pipeline_cache: None,

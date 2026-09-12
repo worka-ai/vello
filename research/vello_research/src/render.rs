@@ -10,13 +10,7 @@ use crate::{AaConfig, RenderParams};
 #[cfg(feature = "wgpu")]
 use crate::Scene;
 
-use vello_encoding::{
-    BufferSizes, BumpAllocators, Encoding, Layout, RenderWorkloadProfile, Resolver, WorkgroupSize,
-    make_mask_lut, make_mask_lut_16,
-};
-
-// Keep in sync with `vello_shaders/shader/shared/ptcl.wgsl`.
-const PTCL_INITIAL_ALLOC: u32 = 64;
+use vello_encoding::{Encoding, Resolver, WorkgroupSize, make_mask_lut, make_mask_lut_16};
 
 #[derive(Clone, Copy, Debug)]
 enum AtlasProxyAction {
@@ -30,9 +24,6 @@ pub struct Render {
     fine_wg_count: Option<WorkgroupSize>,
     fine_resources: Option<FineResources>,
     mask_buf: Option<ResourceProxy>,
-    buffer_sizes: Option<BufferSizes>,
-    layout: Option<Layout>,
-    ptcl_static_len: Option<u32>,
 
     #[cfg(feature = "debug_layers")]
     captured_buffers: Option<CapturedBuffers>,
@@ -101,29 +92,6 @@ pub(crate) fn render_full(
 }
 
 #[cfg(feature = "wgpu")]
-pub(crate) fn render_full_with_profile(
-    scene: &Scene,
-    resolver: &mut Resolver,
-    shaders: &FullShaders,
-    params: &RenderParams,
-    profile: &RenderWorkloadProfile,
-) -> (Recording, ResourceProxy) {
-    let mut render = Render::new();
-    let mut recording = render.render_encoding_coarse_with_profile(
-        scene.encoding(),
-        resolver,
-        shaders,
-        params,
-        Some(profile),
-        None,
-        false,
-    );
-    let out_image = render.out_image();
-    render.record_fine(shaders, &mut recording);
-    (recording, out_image.into())
-}
-
-#[cfg(feature = "wgpu")]
 /// Create a single recording with both coarse and fine render stages.
 ///
 /// This function is not recommended when the scene can be complex, as it does not
@@ -155,9 +123,6 @@ impl Render {
             fine_wg_count: None,
             fine_resources: None,
             mask_buf: None,
-            buffer_sizes: None,
-            layout: None,
-            ptcl_static_len: None,
             #[cfg(feature = "debug_layers")]
             captured_buffers: None,
         }
@@ -174,21 +139,6 @@ impl Render {
         shaders: &FullShaders,
         persistent_image_atlas: &mut Option<ImageProxy>,
         params: &RenderParams,
-        robust: bool,
-    ) -> Recording {
-        self.render_encoding_coarse_with_profile(
-            encoding, resolver, shaders, params, None, None, robust,
-        )
-    }
-
-    pub fn render_encoding_coarse_with_profile(
-        &mut self,
-        encoding: &Encoding,
-        resolver: &mut Resolver,
-        shaders: &FullShaders,
-        params: &RenderParams,
-        profile: Option<&RenderWorkloadProfile>,
-        minimum_bump: Option<BumpAllocators>,
         robust: bool,
     ) -> Recording {
         use vello_encoding::RenderConfig;
@@ -251,23 +201,8 @@ impl Render {
         for image in images.images {
             recording.write_image(image_atlas, image.1, image.2, image.0.clone());
         }
-        let cpu_config = RenderConfig::new_with_profile(
-            &layout,
-            params.width,
-            params.height,
-            &params.base_color,
-            profile,
-            minimum_bump,
-        );
-        self.ptcl_static_len = Some(
-            cpu_config
-                .gpu
-                .width_in_tiles
-                .saturating_mul(cpu_config.gpu.height_in_tiles)
-                .saturating_mul(PTCL_INITIAL_ALLOC),
-        );
-        self.buffer_sizes = Some(cpu_config.buffer_sizes);
-        self.layout = Some(layout);
+        let cpu_config =
+            RenderConfig::new(&layout, params.width, params.height, &params.base_color);
         // HACK: The coarse workgroup counts is the number of active bins.
         if (cpu_config.workgroup_counts.coarse.0
             * cpu_config.workgroup_counts.coarse.1
@@ -621,24 +556,6 @@ impl Render {
         recording
     }
 
-    pub fn allocated_bump(&self) -> Option<BumpAllocators> {
-        let sizes = self.buffer_sizes.as_ref()?;
-        let layout = self.layout.as_ref()?;
-        Some(BumpAllocators {
-            failed: 0,
-            binning: sizes.bin_data.len().saturating_sub(layout.bin_data_start),
-            ptcl: sizes
-                .ptcl
-                .len()
-                .saturating_sub(self.ptcl_static_len.unwrap_or_default()),
-            tile: sizes.tiles.len(),
-            seg_counts: sizes.seg_counts.len(),
-            segments: sizes.segments.len(),
-            blend: sizes.blend_spill.len(),
-            lines: sizes.lines.len(),
-        })
-    }
-
     /// Run fine rasterization assuming the coarse phase succeeded.
     pub fn record_fine(&mut self, shaders: &FullShaders, recording: &mut Recording) {
         let fine_wg_count = self.fine_wg_count.take().unwrap();
@@ -706,24 +623,6 @@ impl Render {
         recording.free_resource(fine.info_bin_data_buf);
         recording.free_resource(fine.blend_spill_buf);
         // TODO: make mask buf persistent
-        if let Some(mask_buf) = self.mask_buf.take() {
-            recording.free_resource(mask_buf);
-        }
-    }
-
-    pub fn record_free_fine_resources(&mut self, recording: &mut Recording) {
-        let Some(fine) = self.fine_resources.take() else {
-            return;
-        };
-        self.fine_wg_count = None;
-        recording.free_resource(fine.config_buf);
-        recording.free_resource(fine.tile_buf);
-        recording.free_resource(fine.segments_buf);
-        recording.free_resource(fine.ptcl_buf);
-        recording.free_resource(fine.gradient_image);
-        recording.free_resource(fine.image_atlas);
-        recording.free_resource(fine.info_bin_data_buf);
-        recording.free_resource(fine.blend_spill_buf);
         if let Some(mask_buf) = self.mask_buf.take() {
             recording.free_resource(mask_buf);
         }
