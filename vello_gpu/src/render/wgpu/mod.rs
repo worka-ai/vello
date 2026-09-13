@@ -534,6 +534,33 @@ impl Renderer {
         )
     }
 
+    /// Uploads an image like [`upload_image`](Self::upload_image), but returns an error instead of
+    /// panicking when the image cannot be placed in an atlas, for example because it is larger than
+    /// an atlas page or every atlas is already full.
+    pub fn try_upload_image<T: AtlasWriter>(
+        &mut self,
+        resources: &mut Resources,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        writer: &T,
+    ) -> Result<vello_common::paint::ImageId, vello_common::multi_atlas::AtlasError> {
+        let image_id =
+            resources
+                .image_cache
+                .allocate(writer.width(), writer.height(), IMAGE_PADDING)?;
+        self.write_to_atlas(
+            &resources.image_cache,
+            device,
+            queue,
+            encoder,
+            image_id,
+            writer,
+            None,
+        );
+        Ok(image_id)
+    }
+
     pub(crate) fn upload_image_with<T: AtlasWriter>(
         &mut self,
         image_cache: &mut ImageCache,
