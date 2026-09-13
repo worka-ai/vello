@@ -8,7 +8,7 @@ use crate::target::{RootTarget, TextureParity};
 use crate::{IntermediateTextureError, RenderError};
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_common::geometry::SizeU16;
-use vello_common::kurbo::Rect;
+use vello_common::kurbo::{Rect, Shape};
 use vello_common::peniko::{BlendMode, Color, Compose, Mix};
 
 #[test]
@@ -915,4 +915,29 @@ fn blend_is_constrained_to_parent_clip_bbox() {
     assert_eq!(blend.blend_bbox, blend.parent_region.layer_bbox);
     // This must not panic.
     let _ = crate::blend::GpuBlendInstance::new(blend, None, SizeU16::new(64));
+}
+
+#[test]
+fn backdrop_snapshot_children_take_the_opposite_parity_of_the_backdrop() {
+    // A backdrop filter snapshots the nodes already recorded in its active layer, including
+    // that layer's child layers. Inside the backdrop those children are one level deeper than
+    // their recorded depth, so they must still use the opposite texture parity of the backdrop
+    // they are composited into. The page only fits the filter layer, so the child and the
+    // backdrop land on different pages and a parity clash cannot bind both.
+    let mut case = SceneCase::new(32, 32);
+    case.layer(|case| {
+        case.layer(|case| case.draw(Rect::new(0.0, 0.0, 16.0, 16.0), 0.5));
+        let clip = Rect::new(0.0, 0.0, 32.0, 32.0).to_path(0.1);
+        case.scene.apply_backdrop_filter(&clip, offset_filter());
+    });
+
+    let scheduled = case
+        .schedule(
+            RootTarget::UserSurface,
+            SizeU16::new(32 + 2 * FILTER_ATLAS_PADDING),
+            8,
+            true,
+        )
+        .expect("a backdrop over a layer with children schedules");
+    assert!(!scheduled.views().is_empty());
 }

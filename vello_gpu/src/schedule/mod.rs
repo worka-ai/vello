@@ -383,7 +383,13 @@ impl<'a, 'p> Scheduler<'a, 'p> {
 
                 // Next, we schedule the layer node. This might trigger advances to our current
                 // base round.
-                let child = self.schedule_child_layer(cmd, state.draw_state.target_bbox, rounds)?;
+                // The root target is not a layer, so its children take the parity after even.
+                let child = self.schedule_child_layer(
+                    cmd,
+                    state.draw_state.target_bbox,
+                    TextureParity::Even,
+                    rounds,
+                )?;
 
                 // Finally, we also schedule the layer sampling operation. It's guaranteed to be
                 // a simple layer, since we know for sure that the root isn't a blend target.
@@ -408,7 +414,12 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             // First make sure that the child node is scheduled, in case it exists. Unlike for root
             // layers, we need to make sure to do this _before_ pushing any draws.
             // TODO: Similarly to Vello CPU, flatten this to avoid stack overflows for deep layers
-            let child = self.schedule_child_layer(cmd, layer.sample_placement.dest_bbox, rounds)?;
+            let child = self.schedule_child_layer(
+                cmd,
+                layer.sample_placement.dest_bbox,
+                layer.texture_parity,
+                rounds,
+            )?;
 
             // Keep this after `schedule_child_layer`: allocating lazily is what makes traversal
             // bottom-up with respect to memory, while still allowing compatible layers to batch.
@@ -487,6 +498,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
         &mut self,
         cmd: &Node,
         parent_bounds: RectU16,
+        parent_parity: TextureParity,
         rounds: &mut Rounds,
     ) -> Result<Option<PreparedChild<'a>>, RenderError> {
         let Some(layer_id) = cmd.layer else {
@@ -524,7 +536,11 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             return Ok(None);
         }
 
-        let opened_layer = self.open_layer(layer, bbox);
+        // A child always takes the opposite parity of the layer it is composited into, so the
+        // draw that samples it can bind both textures. This follows the nesting being scheduled
+        // rather than the recorded depth, because a backdrop filter re-parents the child layers it
+        // snapshots one level deeper than they were recorded.
+        let opened_layer = self.open_layer(layer, bbox, parent_parity.opposite());
         let scheduled = self.schedule_layer(opened_layer, rounds)?;
 
         Ok(Some(PreparedChild {
@@ -534,7 +550,12 @@ impl<'a, 'p> Scheduler<'a, 'p> {
     }
 
     /// Create an unallocated scheduling view of a recorded layer with the given visible bounds.
-    fn open_layer(&self, layer: &'a RecordedLayer, bbox: RectU16) -> OpenLayer<'a> {
+    fn open_layer(
+        &self,
+        layer: &'a RecordedLayer,
+        bbox: RectU16,
+        texture_parity: TextureParity,
+    ) -> OpenLayer<'a> {
         let sample_placement = match &layer.kind {
             RecordedLayerKind::Regular => LayerSamplePlacement::regular(bbox),
             RecordedLayerKind::Filter { placement, .. } => LayerSamplePlacement::filter(*placement),
@@ -543,7 +564,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
         OpenLayer {
             cmds: &layer.nodes,
             kind: &layer.kind,
-            texture_parity: self.layer_texture_parity(layer.depth),
+            texture_parity,
             bbox,
             sample_placement,
             target: None,
@@ -560,11 +581,6 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             sample_placement: LayerSamplePlacement::regular(self.scene_bbox),
             target: None,
         }
-    }
-
-    /// Select the texture group for a recorded layer depth.
-    fn layer_texture_parity(&self, layer_depth: usize) -> TextureParity {
-        TextureParity::from_parity(layer_depth + usize::from(self.recorder.root_is_blend_target))
     }
 
     /// Append a recorded draw range to the next compatible draw pass for the target.
