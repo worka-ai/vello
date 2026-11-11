@@ -2888,13 +2888,12 @@ impl RendererContext<'_> {
         }
 
         let instance_count = u32::try_from(self.scratch_buffers.blend_instances.len()).unwrap();
-        let instance_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Blend Instances Buffer"),
-                contents: bytemuck::cast_slice(&self.scratch_buffers.blend_instances),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let instance_buffer = create_upload_buffer(
+            self.device,
+            self.queue,
+            "Blend Instances Buffer",
+            bytemuck::cast_slice(&self.scratch_buffers.blend_instances),
+        );
 
         {
             let mut render_pass = self.encoder.begin_render_pass(&RenderPassDescriptor {
@@ -2929,6 +2928,7 @@ impl RendererContext<'_> {
         );
         encode_copy_pass(
             self.device,
+            self.queue,
             self.encoder,
             &self.programs.copy_pipeline,
             &self.scratch_buffers.copy_instances,
@@ -2978,6 +2978,7 @@ impl RendererContext<'_> {
         if let Some(copy_pass) = plan.copy_pass() {
             encode_copy_pass(
                 self.device,
+                self.queue,
                 self.encoder,
                 &self.programs.copy_pipeline,
                 copy_pass,
@@ -2992,6 +2993,7 @@ impl RendererContext<'_> {
             let output = bindings.output(step_index);
             encode_filter_pass(
                 self.device,
+                self.queue,
                 self.encoder,
                 resources,
                 &self.programs.filter_pipeline,
@@ -3056,13 +3058,12 @@ impl RendererContext<'_> {
             return;
         }
 
-        let clear_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Clear Buffer"),
-                contents: bytemuck::cast_slice(&self.scratch_buffers.clear_instances),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let clear_buffer = create_upload_buffer(
+            self.device,
+            self.queue,
+            "Clear Buffer",
+            bytemuck::cast_slice(&self.scratch_buffers.clear_instances),
+        );
         let mut render_pass = self.encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Clear Rects"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -3160,6 +3161,7 @@ impl Backend for RendererContext<'_> {
 
 fn encode_copy_pass(
     device: &Device,
+    queue: &Queue,
     encoder: &mut CommandEncoder,
     copy_pipeline: &RenderPipeline,
     instances: &[GpuCopyInstance],
@@ -3167,11 +3169,8 @@ fn encode_copy_pass(
     output_view: &TextureView,
     label: &'static str,
 ) {
-    let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(instances),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
+    let instance_buffer =
+        create_upload_buffer(device, queue, label, bytemuck::cast_slice(instances));
     let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(RenderPassColorAttachment {
@@ -3196,6 +3195,7 @@ fn encode_copy_pass(
 
 fn encode_filter_pass(
     device: &Device,
+    queue: &Queue,
     encoder: &mut CommandEncoder,
     resources: &GpuResources,
     filter_pipeline: &RenderPipeline,
@@ -3206,11 +3206,12 @@ fn encode_filter_pass(
 ) {
     let output_view = resources.layer_view(output);
     let instance_count = u32::try_from(instances.len()).unwrap();
-    let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Filter Instances Buffer"),
-        contents: bytemuck::cast_slice(instances),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
+    let instance_buffer = create_upload_buffer(
+        device,
+        queue,
+        "Filter Instances Buffer",
+        bytemuck::cast_slice(instances),
+    );
 
     let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
         label: Some("Apply Filter Pass"),
@@ -3234,6 +3235,32 @@ fn encode_filter_pass(
     render_pass.set_bind_group(2, original_texture_bind_group, &[]);
     render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
     render_pass.draw(0..4, 0..instance_count);
+}
+
+/// Uploads transient instance data without mapping a buffer during creation.
+///
+/// Some WebGPU implementations reject mapped-at-creation vertex buffers for
+/// ordinary per-frame batches (for example, a 140-byte clear batch). Using the
+/// queue upload path keeps these transient buffers within the portable
+/// WebGPU mapping contract.
+fn create_upload_buffer(
+    device: &Device,
+    queue: &Queue,
+    label: &'static str,
+    bytes: &[u8],
+) -> Buffer {
+    debug_assert_eq!(bytes.len() % wgpu::COPY_BUFFER_ALIGNMENT as usize, 0);
+    let size = (bytes.len() as u64).max(wgpu::COPY_BUFFER_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    if !bytes.is_empty() {
+        queue.write_buffer(&buffer, 0, bytes);
+    }
+    buffer
 }
 
 fn create_filter_input_bind_group(
