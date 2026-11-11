@@ -463,7 +463,7 @@ impl Renderer {
             self.layers_config.max_textures,
         )?;
         self.programs
-            .prepare_intermediate_textures(device, &schedule);
+            .prepare_intermediate_textures(device, queue, &schedule);
         // TODO: For the time being, we upload the entire alpha buffer as one big chunk. As a future
         // refinement, we could have a bounded alpha buffer, and break draws when the alpha
         // buffer fills.
@@ -1808,7 +1808,12 @@ impl Programs {
         texture.create_view(&TextureViewDescriptor::default())
     }
 
-    fn prepare_intermediate_textures(&mut self, device: &Device, schedule: &Schedule) {
+    fn prepare_intermediate_textures(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        schedule: &Schedule,
+    ) {
         let requirements = schedule.intermediate_texture_requirements();
         let texture_size = requirements.size;
         let current_size = self.resources.texture_size;
@@ -1818,11 +1823,19 @@ impl Programs {
         let size_changed = current_size != texture_size;
 
         if size_changed {
-            self.resources.layer_config_buffer = Self::create_config_buffer(
-                device,
+            // The config buffer has a fixed size, so keep the existing allocation and update its
+            // contents through the queue. Recreating this tiny buffer with `create_buffer_init`
+            // maps it at creation time; some WebGPU implementations fail that mapping while the
+            // renderer is resizing even though the buffer itself is only a few bytes.
+            let config = Self::config(
                 u32::from(texture_size.width()),
                 u32::from(texture_size.height()),
                 self.resources.resource_texture_dimension_2d,
+            );
+            queue.write_buffer(
+                &self.resources.layer_config_buffer,
+                0,
+                bytemuck::bytes_of(&config),
             );
         }
 
@@ -1934,20 +1947,25 @@ impl Programs {
         height: u32,
         alpha_texture_width: u32,
     ) -> Buffer {
+        let config = Self::config(width, height, alpha_texture_width);
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Config Buffer"),
-            contents: bytemuck::bytes_of(&Config {
-                width,
-                height,
-                strip_height: Tile::HEIGHT.into(),
-                alphas_tex_width_bits: alpha_texture_width.trailing_zeros(),
-                encoded_paints_tex_width_bits: alpha_texture_width.trailing_zeros(),
-                strip_offset_x: 0,
-                strip_offset_y: 0,
-                negate_ndc: 0,
-            }),
+            contents: bytemuck::bytes_of(&config),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })
+    }
+
+    fn config(width: u32, height: u32, alpha_texture_width: u32) -> Config {
+        Config {
+            width,
+            height,
+            strip_height: Tile::HEIGHT.into(),
+            alphas_tex_width_bits: alpha_texture_width.trailing_zeros(),
+            encoded_paints_tex_width_bits: alpha_texture_width.trailing_zeros(),
+            strip_offset_x: 0,
+            strip_offset_y: 0,
+            negate_ndc: 0,
+        }
     }
 
     fn create_alphas_texture(device: &Device, width: u32, height: u32) -> Texture {
