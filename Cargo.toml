@@ -131,7 +131,7 @@ web-sys = "0.3.91"
 
 vello_common = { package = "fission-vello-common", version = "0.2.0-fission.1", path = "vello_common", default-features = false }
 vello_cpu = { package = "fission-vello-cpu", version = "0.2.0-fission.1", path = "vello_cpu" }
-vello_gpu = { package = "fission-vello-gpu", version = "0.2.0-fission.1", path = "vello_gpu", default-features = false }
+vello_gpu = { package = "fission-vello-gpu", version = "0.2.0-fission.2", path = "vello_gpu", default-features = false }
 vello_gpu_shaders = { package = "fission-vello-gpu-shaders", version = "0.2.0-fission.1", path = "vello_gpu_shaders" }
 glifo = { package = "fission-glifo", version = "0.3.0-fission.1", path = "glifo", default-features = false }
 vello_example_scenes = { path = "vello_tests/vello_example_scenes" }
